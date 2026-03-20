@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="Sheltly AI Backend")
+app = FastAPI(title="Sheltly Semantic Search AI Backend")
 
 @app.get("/")
 async def root():
