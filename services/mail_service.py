@@ -1,0 +1,39 @@
+import os
+import asyncio
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
+from core.config import settings
+from core.celery_app import celery_app
+
+# Define the connection config
+conf = ConnectionConfig(
+    MAIL_USERNAME=settings.MAIL_USERNAME,
+    MAIL_PASSWORD=settings.MAIL_PASSWORD,
+    MAIL_FROM=settings.MAIL_FROM,
+    MAIL_PORT=settings.MAIL_PORT,
+    MAIL_SERVER=settings.MAIL_SERVER,
+    MAIL_FROM_NAME=settings.PROJECT_NAME,
+    MAIL_STARTTLS=False, # Set to True for Gmail/Production
+    MAIL_SSL_TLS=False,   # Set to True for Port 465
+    USE_CREDENTIALS=False, # Set to True for Gmail/Production
+    TEMPLATE_FOLDER=os.path.join(os.path.dirname(__file__), "templates/email")
+)
+
+@celery_app.task(name="send_verification_email")
+def send_verification_email(email_to: str, first_name: str, otp: str):
+    """
+    Background task to send OTP using fastapi-mail
+    """
+    message = MessageSchema(
+        subject="Sheltly verification code",
+        recipients=[email_to],
+        template_body={"first_name": first_name, "otp": otp},
+        subtype=MessageType.html
+    )
+
+    fm = FastMail(conf)
+    
+    # Since Celery is sync, we run the async send_message in a loop
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(fm.send_message(message, template_name="email_verification.html"))
+    
+    return {"status": "success", "recipient": email_to}

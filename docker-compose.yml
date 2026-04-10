@@ -1,4 +1,5 @@
 version: "3.9"
+
 services:
   sheltly-postgres-db:
     image: pgvector/pgvector:pg17
@@ -12,11 +13,86 @@ services:
       - "5432:5432"
     volumes:
       - sheltly_postgres_data:/var/lib/postgresql/data
+    networks:
+      - sheltly_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 30s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 5
+
+  sheltly-redis:
+    image: redis:7-alpine
+    container_name: sheltly_redis
+    restart: unless-stopped
+    networks:
+      - sheltly_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sheltly-mailhog:
+    image: mailhog/mailhog:latest
+    container_name: sheltly_mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - sheltly_network
+
+  sheltly-api:
+    build: .
+    container_name: sheltly_api
+    command: /app/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - /app/.venv
+      - ./logs:/app/logs
+    environment:
+      - PROCESS_TYPE=api
+      - REDIS_URL=${REDIS_URL}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=sheltly-postgres-db
+      - DATABASE_ASYNC_URL=${DATABASE_ASYNC_URL}
+    depends_on:
+      sheltly-postgres-db:
+        condition: service_healthy
+      sheltly-redis:
+        condition: service_healthy
+    networks:
+      - sheltly_network
+
+  sheltly-worker:
+    build: .
+    container_name: sheltly_worker
+    command: /app/.venv/bin/celery -A core.celery_app worker --loglevel=info -P solo
+    volumes:
+      - .:/app
+      - /app/.venv
+      - ./logs:/app/logs
+    environment:
+      - PROCESS_TYPE=worker
+      - REDIS_URL=${REDIS_URL}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=sheltly-postgres-db
+    depends_on:
+      sheltly-api:
+        condition: service_started
+    networks:
+      - sheltly_network
+
+networks:
+  sheltly_network:
+    driver: bridge
 
 volumes:
   sheltly_postgres_data:

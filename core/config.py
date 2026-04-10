@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import PostgresDsn, computed_field
 from pydantic_core import MultiHostUrl
+from typing import Optional
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -21,8 +22,18 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 
 
 
-    PROJECT_NAME: str = "Sheltly AI Backend"
+    PROJECT_NAME: str = "Sheltly"
     VERSION: str = "1.0.0"
+
+    REDIS_URL: str
+    
+    MAIL_USERNAME: Optional[str] = None
+    MAIL_PASSWORD: Optional[str] = None
+    MAIL_FROM: Optional[str] = None
+    MAIL_PORT: int = 587
+    MAIL_SERVER: Optional[str] = None
+
+    FRONTEND_URL: str = "http://localhost:3000"
 
     @computed_field
     @property
