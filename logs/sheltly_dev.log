@@ -1,0 +1,26 @@
+2026-04-12 09:40:49 | INFO     | api.v1.auth:login:99 - Login attempt for email: emmanuel@student.com
+2026-04-12 10:00:17 | INFO     | api.v1.auth:login:100 - Login attempt for email: emmanuel@student.com
+2026-04-12 10:01:16 | INFO     | api.v1.users:get_current_user_profile:32 - Profile retrieved for user: emmanuel@student.com
+2026-04-12 10:08:26 | INFO     | api.v1.users:get_current_user_profile:32 - Profile retrieved for user: emmanuel@student.com
+2026-04-12 10:11:36 | INFO     | api.v1.auth:login:100 - Login attempt for email: emmanuel@student.com
+2026-04-12 10:12:59 | INFO     | api.v1.users:get_current_user_profile:32 - Profile retrieved for user: emmanuel@student.com
+2026-04-12 10:14:08 | INFO     | api.v1.users:get_current_user_profile:32 - Profile retrieved for user: emmanuel@student.com
+2026-04-12 10:14:10 | INFO     | api.v1.users:get_current_user_profile:32 - Profile retrieved for user: emmanuel@student.com
+2026-04-12 10:14:54 | INFO     | api.v1.auth:login:100 - Login attempt for email: emmanuel@student.com
+2026-04-12 10:15:30 | INFO     | api.v1.auth:login:100 - Login attempt for email: emmanuel@student.com
+2026-04-12 10:17:06 | INFO     | api.v1.auth:forgot_password:247 - Password reset requested for email: emmanuel@student.com
+2026-04-12 10:17:06 | SUCCESS  | api.v1.auth:forgot_password:261 - Password reset OTP generated for email: emmanuel@student.com
+2026-04-12 10:28:53 | INFO     | api.v1.auth:forgot_password:247 - Password reset requested for email: emmanuel@student.com
+2026-04-12 10:28:53 | SUCCESS  | api.v1.auth:forgot_password:261 - Password reset OTP generated for email: emmanuel@student.com
+2026-04-12 10:29:28 | INFO     | api.v1.auth:forgot_password:247 - Password reset requested for email: emmanuel@student.com
+2026-04-12 10:29:28 | SUCCESS  | api.v1.auth:forgot_password:261 - Password reset OTP generated for email: emmanuel@student.com
+2026-04-12 10:31:14 | INFO     | api.v1.auth:reset_password:283 - Password reset attempt for email: emmanuel@student.com
+2026-04-12 10:31:14 | WARNING  | api.v1.auth:reset_password:289 - Invalid/expired password reset OTP for email: emmanuel@student.com
+2026-04-12 10:31:28 | INFO     | api.v1.auth:reset_password:283 - Password reset attempt for email: emmanuel@student.com
+2026-04-12 10:31:35 | INFO     | api.v1.auth:reset_password:283 - Password reset attempt for email: emmanuel@student.com
+2026-04-12 10:55:45 | INFO     | api.v1.auth:reset_password:282 - Processing password reset for: emmanuel@student.com
+2026-04-12 10:55:46 | WARNING  | api.v1.auth:reset_password:287 - Invalid or expired reset OTP for: emmanuel@student.com
+2026-04-12 10:56:06 | INFO     | api.v1.auth:forgot_password:247 - Password reset requested for email: emmanuel@student.com
+2026-04-12 10:56:06 | SUCCESS  | api.v1.auth:forgot_password:261 - Password reset OTP generated for email: emmanuel@student.com
+2026-04-12 10:56:29 | INFO     | api.v1.auth:reset_password:282 - Processing password reset for: emmanuel@student.com
+2026-04-12 10:56:29 | SUCCESS  | api.v1.auth:reset_password:310 - Password reset successful for: emmanuel@student.com

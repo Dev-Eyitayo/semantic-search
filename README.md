@@ -1,5 +1,6 @@
 commands to start up my set up
 
+# Start the database and redis service for dev
 docker-compose -f docker-compose.dev.yml up
 
 # Run the FastAPI server with auto-reload

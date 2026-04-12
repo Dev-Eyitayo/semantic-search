@@ -6,6 +6,10 @@ from core.config import settings
 from db.base import Base
 from alembic import context
 
+# Import all models so they register with Base.metadata for autogenerate
+from db.models.user import User, RefreshToken
+from db.models.property import Property, SavedSearch
+
 config = context.config
 
 

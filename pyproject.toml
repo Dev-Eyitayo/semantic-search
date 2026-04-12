@@ -26,5 +26,6 @@ dependencies = [
     "loguru>=0.7.3",
     "bcrypt>=5.0.0",
     "fastapi-mail>=1.6.2",
+    "cloudinary>=1.44.1",
 ]
 

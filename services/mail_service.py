@@ -1,6 +1,7 @@
 import os
 import asyncio
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
+from loguru import logger
 from core.config import settings
 from core.celery_app import celery_app
 
@@ -21,19 +22,55 @@ conf = ConnectionConfig(
 @celery_app.task(name="send_verification_email")
 def send_verification_email(email_to: str, first_name: str, otp: str):
     """
-    Background task to send OTP using fastapi-mail
+    Background task to send OTP verification email using fastapi-mail
     """
-    message = MessageSchema(
-        subject="Sheltly verification code",
-        recipients=[email_to],
-        template_body={"first_name": first_name, "otp": otp},
-        subtype=MessageType.html
-    )
+    logger.info(f"Email verification task started - Recipient: {email_to}, Name: {first_name}")
+    
+    try:
+        message = MessageSchema(
+            subject="Sheltly verification code",
+            recipients=[email_to],
+            template_body={"first_name": first_name, "otp": otp},
+            subtype=MessageType.html
+        )
 
-    fm = FastMail(conf)
+        fm = FastMail(conf)
+        
+        # Since Celery is sync, we run the async send_message in a loop
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(fm.send_message(message, template_name="email_verification.html"))
+        
+        logger.success(f"Email verification sent successfully - Recipient: {email_to}")
+        return {"status": "success", "recipient": email_to}
     
-    # Since Celery is sync, we run the async send_message in a loop
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(fm.send_message(message, template_name="email_verification.html"))
+    except Exception as e:
+        logger.error(f"Failed to send verification email to {email_to}: {str(e)}")
+        raise
+
+
+@celery_app.task(name="send_password_reset_otp")
+def send_password_reset_otp(email_to: str, first_name: str, otp: str):
+    """
+    Background task to send password reset OTP email via fastapi-mail
+    """
+    logger.info(f"Password reset email task started - Recipient: {email_to}, Name: {first_name}")
     
-    return {"status": "success", "recipient": email_to}
+    try:
+        message = MessageSchema(
+            subject="Reset your Sheltly password",
+            recipients=[email_to],
+            template_body={"first_name": first_name, "otp": otp},
+            subtype=MessageType.html
+        )
+
+        fm = FastMail(conf)
+        
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(fm.send_message(message, template_name="email_password_reset.html"))
+        
+        logger.success(f"Password reset email sent successfully - Recipient: {email_to}")
+        return {"status": "success", "recipient": email_to}
+    
+    except Exception as e:
+        logger.error(f"Failed to send password reset email to {email_to}: {str(e)}")
+        raise
