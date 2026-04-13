@@ -179,7 +179,7 @@ async def create_property(
     images: List[UploadFile] = File(default=[], description="Property images (max 15, JPEG|PNG|WebP, 5MB each)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _=Depends(IsListerOrAdmin())  # DRF-style permission dependency
+    _=Depends(IsListerOrAdmin()) 
 ):
     """
     Create a new property listing with images in a single multipart request.
@@ -502,7 +502,7 @@ async def delete_property(
         logger.warning(f"Property not found - ID: {property_id}")
         raise HTTPException(status_code=404, detail="Property not found")
     
-    # Check ownership permission using DRF-style permissions
+    # Check ownership permission
     permission = IsObjectOwner(Property, "property_id", "lister_id")
     await check_object_permission(permission, current_user, property_id, db)
     
@@ -525,7 +525,7 @@ async def get_my_listings(
     status: PropertyStatus = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _=Depends(IsLister())  # DRF-style permission: only listers can access their listings
+    _=Depends(IsLister())  
 ):
     """
     Retrieve all listings submitted by the currently authenticated lister,

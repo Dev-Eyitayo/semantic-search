@@ -11,7 +11,7 @@ from core.permissions import IsAdmin, IsLister, IsAuthenticated, IsListerOrAdmin
 from loguru import logger
 import uuid
 
-# Use HTTPBearer instead of OAuth2PasswordBearer for simple Bearer token input in Swagger
+
 security_scheme = HTTPBearer(description="Bearer token - paste your JWT access token here")
 
 async def get_current_user(

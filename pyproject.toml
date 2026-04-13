@@ -12,6 +12,7 @@ dependencies = [
     "pydantic[email]>=2.12.5",
     "pydantic-settings>=2.13.1",
     "sqlalchemy>=2.0.48",
+    "pgvector>=0.2.0",
     "uvicorn[standard]>=0.42.0",
     "python-jose[cryptography]>=3.5.0",
     "redis>=7.4.0",
