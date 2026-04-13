@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Listing Review Results</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .content-table {
+                width: 100% !important;
+            }
+            .action-button {
+                display: block !important;
+                width: 100% !important;
+            }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f7f9; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+    <center>
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f4f7f9;">
+            <tr>
+                <td align="center" style="padding: 40px 10px;">
+                    <table class="content-table" role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+                        
+                        <!-- Header -->
+                        <tr>
+                            <td align="center" style="padding: 30px 40px 10px 40px;">
+                                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 700;">Sheltly</h1>
+                            </td>
+                        </tr>
+
+                        <!-- Status Badge -->
+                        <tr>
+                            <td align="center" style="padding: 15px 40px;">
+                                <span style="display: inline-block; background-color: #dc3545; color: #ffffff; padding: 10px 20px; border-radius: 6px; font-weight: 600; font-size: 16px;">⚠ Listing Needs Review</span>
+                            </td>
+                        </tr>
+
+                        <!-- Main Content -->
+                        <tr>
+                            <td style="padding: 20px 40px; color: #444444; font-size: 16px; line-height: 1.6;">
+                                <p style="margin: 0 0 15px 0;">Hi {{ first_name }},</p>
+                                <p style="margin: 0 0 20px 0;">Thank you for submitting your property listing on <strong>Sheltly</strong>. Unfortunately, we couldn't approve it at this time. Please review the feedback below and resubmit:</p>
+
+                                <!-- Rejection Reason Card -->
+                                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 25px 0; background-color: #fff5f5; border-radius: 8px; border-left: 4px solid #dc3545;">
+                                    <tr>
+                                        <td style="padding: 20px;">
+                                            <p style="margin: 0 0 10px 0; font-weight: 600; color: #1a1a1a; font-size: 15px;">📋 Reason for Review Request:</p>
+                                            <p style="margin: 0; font-size: 14px; color: #666666; line-height: 1.6;">{{ rejection_reason }}</p>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <!-- Property Details Card -->
+                                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 25px 0; background-color: #f8f9fa; border-radius: 8px;">
+                                    <tr>
+                                        <td style="padding: 20px;">
+                                            <p style="margin: 0 0 10px 0; font-weight: 600; color: #1a1a1a; font-size: 15px;">📍 {{ property_title }}</p>
+                                            <p style="margin: 0; font-size: 14px; color: #666666;">{{ property_location }}</p>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <!-- Next Steps -->
+                                <p style="margin: 0 0 20px 0; font-weight: 600; font-size: 15px; color: #1a1a1a;">What's Next?</p>
+                                <ol style="margin: 0 0 20px 0; padding-left: 20px; color: #666666;">
+                                    <li style="margin: 8px 0;">Edit your listing to address the feedback above</li>
+                                    <li style="margin: 8px 0;">Use clear, detailed descriptions and accurate pricing</li>
+                                    <li style="margin: 8px 0;">Ensure all property details are complete and accurate</li>
+                                    <li style="margin: 8px 0;">Resubmit for review when ready</li>
+                                </ol>
+
+                                <p style="margin: 0 0 20px 0; font-size: 14px; color: #666666;">We're here to help! If you have questions about the feedback, please reach out to our support team.</p>
+
+                                <!-- Support CTA -->
+                                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                                    <tr>
+                                        <td align="center" style="padding: 20px 0;">
+                                            <a href="mailto:support@sheltly.com" class="action-button" style="display: inline-block; background-color: #007bff; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 6px; font-weight: 600; font-size: 14px;">Contact Support</a>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+
+                        <!-- Footer -->
+                        <tr>
+                            <td style="padding: 20px 40px 30px 40px; color: #999999; font-size: 12px; text-align: center;">
+                                <p style="margin: 0;">© 2026 Sheltly. All rights reserved.</p>
+                                <p style="margin: 5px 0 0 0;">
+                                    <a href="mailto:support@sheltly.com" style="color: #007bff; text-decoration: none;">Contact Support</a>
+                                </p>
+                            </td>
+                        </tr>
+
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Your Listing Has Been Approved</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .content-table {
+                width: 100% !important;
+            }
+            .badge {
+                font-size: 14px !important;
+                padding: 8px 16px !important;
+            }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f7f9; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+    <center>
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f4f7f9;">
+            <tr>
+                <td align="center" style="padding: 40px 10px;">
+                    <table class="content-table" role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+                        
+                        <!-- Header -->
+                        <tr>
+                            <td align="center" style="padding: 30px 40px 10px 40px;">
+                                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 700;">Sheltly</h1>
+                            </td>
+                        </tr>
+
+                        <!-- Status Badge -->
+                        <tr>
+                            <td align="center" style="padding: 15px 40px;">
+                                <span class="badge" style="display: inline-block; background-color: #28a745; color: #ffffff; padding: 10px 20px; border-radius: 6px; font-weight: 600; font-size: 16px;">✓ Listing Approved</span>
+                            </td>
+                        </tr>
+
+                        <!-- Main Content -->
+                        <tr>
+                            <td style="padding: 20px 40px; color: #444444; font-size: 16px; line-height: 1.6;">
+                                <p style="margin: 0 0 15px 0;">Hi {{ first_name }},</p>
+                                <p style="margin: 0 0 20px 0;">Great news! Your property listing has been approved and is now live on <strong>Sheltly</strong>. It's now discoverable by thousands of property seekers using our AI-powered search.</p>
+
+                                <!-- Property Details Card -->
+                                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 25px 0; background-color: #f8f9fa; border-radius: 8px; border-left: 4px solid #28a745;">
+                                    <tr>
+                                        <td style="padding: 20px;">
+                                            <p style="margin: 0 0 10px 0; font-weight: 600; color: #1a1a1a; font-size: 15px;">📍 {{ property_title }}</p>
+                                            <p style="margin: 0 0 5px 0; font-size: 14px; color: #666666;">{{ property_location }}</p>
+                                            <p style="margin: 0; font-size: 14px; color: #007bff; font-weight: 500;">Approved on {{ approved_date }}</p>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <p style="margin: 0 0 20px 0;">Your property is now searchable across our platform and will appear in relevant results based on property type, location, price, and amenities.</p>
+
+                                <p style="margin: 0; font-size: 14px; color: #666666;">If you need to make any changes to your listing, you can update it anytime from your dashboard.</p>
+                            </td>
+                        </tr>
+
+                        <!-- Footer -->
+                        <tr>
+                            <td style="padding: 20px 40px 30px 40px; color: #999999; font-size: 12px; text-align: center;">
+                                <p style="margin: 0;">© 2026 Sheltly. All rights reserved.</p>
+                                <p style="margin: 5px 0 0 0;">
+                                    <a href="mailto:support@sheltly.com" style="color: #007bff; text-decoration: none;">Contact Support</a>
+                                </p>
+                            </td>
+                        </tr>
+
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>

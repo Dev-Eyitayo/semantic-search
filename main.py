@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError 
 from core.config import settings
-from api.v1 import auth, users, properties, media, search, ai
+from api.v1 import auth, users, properties, media, search, ai, admin
 from fastapi.responses import JSONResponse
 from core.logger import setup_logging
 import cloudinary
@@ -122,6 +122,8 @@ app.include_router(properties.router, prefix="/api/v1/properties", tags=["Proper
 app.include_router(media.router, prefix="/api/v1/media", tags=["Media"])
 app.include_router(search.router, prefix="/api/v1/search", tags=["Search"])
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["AI/Ranking"])
+app.include_router(admin.router, tags=["Admin"])
+
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "healthy", "engine": "running"}
