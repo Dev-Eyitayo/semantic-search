@@ -144,10 +144,8 @@ async def get_detailed_explanation(
     if listing.status != PropertyStatus.APPROVED:
         raise HTTPException(status_code=404, detail="Listing not available")
     
-    # ============================================================================
-    # PHASE 1: CALCULATE FEATURE SCORES
-    # ============================================================================
-    
+        # PHASE 1: CALCULATE FEATURE SCORES
+        
     try:
         feature_scores = await get_property_feature_scores(query, listing, db)
         logger.debug(f"Feature scores calculated: {feature_scores}")
@@ -155,10 +153,8 @@ async def get_detailed_explanation(
         logger.error(f"Error calculating feature scores: {e}")
         raise HTTPException(status_code=500, detail="Failed to calculate feature scores")
     
-    # ============================================================================
-    # PHASE 2: COMPUTE SHAP VALUES (TARGET: < 300MS)
-    # ============================================================================
-    
+        # PHASE 2: COMPUTE SHAP VALUES (TARGET: < 300MS)
+        
     shap_start = time.time()
     computation_method = "rankshap"
     features = []
@@ -219,10 +215,8 @@ async def get_detailed_explanation(
                 )
             )
     
-    # ============================================================================
-    # PHASE 3: GENERATE EXPLANATION TEXT
-    # ============================================================================
-    
+        # PHASE 3: GENERATE EXPLANATION TEXT
+        
     # Calculate final score as average of all feature values
     final_score = sum(f.raw_value for f in features) / len(features) if features else 0.5
     final_score = min(1.0, max(0.0, final_score))

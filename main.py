@@ -5,6 +5,7 @@ from api.v1 import auth, users, properties, media, search, ai, admin
 from fastapi.responses import JSONResponse
 from core.logger import setup_logging
 import cloudinary
+from loguru import logger
 
 
 setup_logging()
@@ -78,6 +79,78 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+# Startup and Shutdown Events
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize AI models on startup with warm-up.
+    Prevents cold starts and ensures models are ready before serving requests.
+    """
+    logger.info("🚀 Application startup: Initializing AI models...")
+    
+    try:
+        # Warm up embedding model
+        from services.embedding_service import get_embedding_model, get_cache_stats
+        logger.info("Loading and warming up embedding model...")
+        
+        embedding_model = get_embedding_model(warmup=True)
+        logger.success(f"✓ Embedding model ready: all-MiniLM-L6-v2 (384 dims)")
+        
+        # Optional: Warm up reranker model
+        try:
+            from services.ai_service import get_reranker_model
+            logger.info("Loading reranker model...")
+            reranker = get_reranker_model()
+            logger.success("✓ Reranker model ready: cross-encoder/ms-marco-MiniLM-L-6-v2")
+        except Exception as e:
+            logger.warning(f"Reranker model warmup skipped: {e}")
+        
+        # Log cache stats
+        cache_stats = get_cache_stats()
+        logger.info(
+            f"✓ Embedding cache initialized "
+            f"(max size: {cache_stats['max_size']}, "
+            f"current: {cache_stats['cache_size']})"
+        )
+        
+        logger.success("🎉 AI models initialized and ready!")
+        logger.info("=" * 60)
+        logger.info("📊 Embedding Configuration:")
+        logger.info("  • Model: all-MiniLM-L6-v2 (optimized, 384 dims)")
+        logger.info("  • Batch Processing: ✓ Enabled")
+        logger.info("  • Caching: ✓ Enabled")
+        logger.info("  • Background Tasks: ✓ Support for FastAPI & Celery")
+        logger.info("=" * 60)
+    
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {e}")
+        # Don't crash the app, but log the warning
+        logger.warning("App starting without prewarmed models (will load on first request)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """
+    Cleanup on shutdown.
+    """
+    logger.info("🛑 Application shutdown: Cleaning up resources...")
+    
+    try:
+        from services.embedding_service import get_cache_stats, clear_embedding_cache
+        
+        # Clear cache to free memory
+        cache_info = get_cache_stats()
+        if cache_info['cache_size'] > 0:
+            cleared = clear_embedding_cache()
+            logger.info(f"✓ Cleared {cleared} cached embeddings")
+        
+        logger.success("✓ Cleanup completed")
+    
+    except Exception as e:
+        logger.warning(f"Shutdown cleanup warning: {e}")
+
 
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):

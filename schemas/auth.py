@@ -33,6 +33,9 @@ class UserCreate(BaseModel):
             raise ValueError("Password must contain at least 1 uppercase letter, 1 number, and 1 special character")
         return v
     
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
 
 class Token(BaseModel):
     access_token: str

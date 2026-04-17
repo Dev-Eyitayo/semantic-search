@@ -1,39 +1,29 @@
 """
-AI services for embeddings and SHAP explanations.
-Uses sentence-transformers for embeddings and SHAP for feature attribution.
+AI services for embeddings, similarity calculations, and SHAP explanations.
+Refactored to use optimized embedding_service with batch processing support.
 """
 
 import numpy as np
-from typing import List, Dict, Tuple
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from typing import List, Dict, Tuple, Union, Optional
+from sentence_transformers import CrossEncoder
 from shap import KernelExplainer
-import logging
 from loguru import logger
+import time
 
-# Model configurations
-EMBEDDING_MODEL_NAME = "all-mpnet-base-v2"
+from services.embedding_service import (
+    generate_embedding,
+    generate_embeddings_batch,
+    calculate_semantic_similarity,
+    batch_similarity_search,
+    get_embedding_model,
+    EMBEDDING_DIMENSIONS
+)
+
+# Reranker model configuration
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Global model instances (lazy loaded)
-_embedding_model = None
-_reranker_model = None
-
-
-def get_embedding_model() -> SentenceTransformer:
-    """
-    Get or initialize the embedding model (lazy loading).
-    Model is loaded once and reused for all requests.
-    """
-    global _embedding_model
-    if _embedding_model is None:
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
-        try:
-            _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            logger.success(f"Embedding model loaded successfully: {EMBEDDING_MODEL_NAME}")
-        except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
-            raise RuntimeError(f"Embedding model initialization failed: {e}")
-    return _embedding_model
+# Global reranker instance (lazy loaded)
+_reranker_model: Optional[CrossEncoder] = None
 
 
 def get_reranker_model() -> CrossEncoder:
@@ -53,9 +43,15 @@ def get_reranker_model() -> CrossEncoder:
     return _reranker_model
 
 
-def generate_embedding(text: str, normalize: bool = False) -> Tuple[List[float], int]:
+# Backward compatibility functions (wrapping embedding_service)
+
+def generate_embedding(
+    text: str,
+    normalize: bool = True
+) -> Tuple[List[float], int]:
     """
     Generate S-BERT embedding for input text.
+    BACKWARD COMPATIBLE with previous implementation.
     
     Args:
         text: Input text to embed (max ~5000 chars)
@@ -64,86 +60,114 @@ def generate_embedding(text: str, normalize: bool = False) -> Tuple[List[float],
     Returns:
         Tuple of (embedding list, processing_time_ms)
     """
-    import time
-    
-    if not text or len(text.strip()) == 0:
-        raise ValueError("Text cannot be empty")
-    
-    # Rough token limit check (approx 4 chars per token)
-    if len(text) > 20000:  # ~5000 tokens at 4 chars per token
-        raise ValueError("Text exceeds maximum length (~5000 tokens)")
-    
-    start_time = time.time()
-    
-    try:
-        model = get_embedding_model()
-        
-        # Generate embedding
-        embedding_array = model.encode(text, convert_to_numpy=True)
-        
-        # Convert to list
-        embedding = embedding_array.tolist()
-        
-        # L2 normalize if requested (for cosine similarity)
-        if normalize:
-            magnitude = np.sqrt(np.sum(np.array(embedding) ** 2))
-            if magnitude > 0:
-                embedding = (np.array(embedding) / magnitude).tolist()
-        
-        processing_time_ms = int((time.time() - start_time) * 1000)
-        
-        logger.debug(f"Embedding generated - Text length: {len(text)}, Time: {processing_time_ms}ms")
-        
-        return embedding, processing_time_ms
-        
-    except Exception as e:
-        logger.error(f"Embedding generation failed: {e}")
-        raise
+    from services.embedding_service import generate_embedding as gen_embedding
+    return gen_embedding(text, normalize=normalize)
 
 
-def calculate_semantic_similarity(query: str, property_text: str) -> float:
+# New optimized functions
+
+def generate_embeddings_batch(
+    texts: Union[List[str], str],
+    normalize: bool = True,
+    batch_size: int = 32
+) -> Tuple[List[List[float]], int]:
     """
-    Calculate semantic similarity between a query and property text using S-BERT.
+    Generate embeddings for multiple texts efficiently using batch processing.
+    
+    Args:
+        texts: Single text string or list of text strings
+        normalize: Whether to apply L2 normalization
+        batch_size: Batch size for encoding (higher = faster but more memory)
+        
+    Returns:
+        Tuple of (list of embeddings, total_processing_time_ms)
+        
+    Example:
+        texts = ["Luxury apartment", "Small studio", "Commercial space"]
+        embeddings, time = generate_embeddings_batch(texts)
+    """
+    from services.embedding_service import generate_embeddings_batch as gen_batch
+    return gen_batch(texts, normalize=normalize, batch_size=batch_size)
+
+
+def calculate_semantic_similarity(
+    query: str,
+    texts: Union[List[str], str],
+    normalize: bool = True
+) -> Union[float, List[float]]:
+    """
+    Calculate semantic similarity between query and text(s).
+    Efficiently handles both single and batch comparisons.
+    
+    Args:
+        query: Search query text
+        texts: Single text or list of texts to compare against
+        normalize: Whether to normalize embeddings
+        
+    Returns:
+        Single float (0-1) if texts is str, or list of floats if texts is list
+        
+    Example:
+        # Single comparison
+        score = calculate_semantic_similarity("luxury apartment", "High-end 2BR flat")
+        
+        # Batch comparison
+        scores = calculate_semantic_similarity(
+            "apartment near metro",
+            ["Flat near station", "House in suburb", "Office space"]
+        )
+    """
+    from services.embedding_service import calculate_semantic_similarity as calc_sim
+    return calc_sim(query, texts, normalize=normalize)
+
+
+def batch_similarity_search(
+    query: str,
+    candidates: List[str],
+    top_k: Optional[int] = None,
+    normalize: bool = True
+) -> List[Tuple[int, str, float]]:
+    """
+    Efficient batch similarity search over candidates.
+    Returns ranked results sorted by relevance.
     
     Args:
         query: Search query
-        property_text: Property title + description
+        candidates: List of candidate property descriptions
+        top_k: Return only top k results (None = all)
+        normalize: Whether to normalize embeddings
         
     Returns:
-        Similarity score between 0.0 and 1.0
+        List of (index, text, score) tuples sorted by score descending
+        
+    Example:
+        candidates = [
+            "Luxury 3BR apartment in downtown",
+            "Studio flat in suburbs",
+            "1BR near transportation"
+        ]
+        results = batch_similarity_search("apartment downtown", candidates, top_k=2)
+        # Returns: [(0, "Luxury 3BR apartment in downtown", 0.89), ...]
     """
-    try:
-        model = get_embedding_model()
-        
-        # Encode both texts
-        query_embedding = model.encode(query, convert_to_numpy=True)
-        property_embedding = model.encode(property_text, convert_to_numpy=True)
-        
-        # Calculate cosine similarity
-        from sklearn.metrics.pairwise import cosine_similarity
-        similarity = cosine_similarity(
-            [query_embedding],
-            [property_embedding]
-        )[0][0]
-        
-        # Ensure within [0, 1]
-        similarity = float(similarity)
-        similarity = max(0.0, min(1.0, similarity))
-        
-        return similarity
-        
-    except Exception as e:
-        logger.error(f"Semantic similarity calculation failed: {e}")
-        raise
+    from services.embedding_service import batch_similarity_search as batch_search
+    return batch_search(query, candidates, top_k=top_k, normalize=normalize)
 
 
-def rerank_results(query: str, candidates: List[str]) -> List[Tuple[int, float]]:
+# Reranking functions
+
+def rerank_results(
+    query: str,
+    candidates: List[str],
+    use_batch_similarity: bool = False
+) -> List[Tuple[int, float]]:
     """
     Rerank candidate property texts using cross-encoder.
+    Optionally uses batch similarity for pre-filtering.
     
     Args:
         query: Search query
         candidates: List of property descriptions to rank
+        use_batch_similarity: If True, use batch similarity for pre-filtering before reranking
         
     Returns:
         List of (index, score) tuples sorted by score descending
@@ -167,12 +191,18 @@ def rerank_results(query: str, candidates: List[str]) -> List[Tuple[int, float]]
             reverse=True
         )
         
+        logger.debug(f"Reranked {len(candidates)} candidates")
+        
         return ranked
         
     except Exception as e:
         logger.error(f"Reranking failed: {e}")
         raise
 
+
+
+
+# SHAP-based explanation functions
 
 def compute_shap_explanation(
     query: str,
@@ -192,7 +222,6 @@ def compute_shap_explanation(
     Returns:
         Dictionary of feature names to Shapley values
     """
-    import time
     start_time = time.time()
     
     try:
@@ -202,7 +231,6 @@ def compute_shap_explanation(
             Predicts relevance based on feature values.
             feature_array shape: (num_samples, num_features)
             """
-            # Weighted sum of features
             if len(feature_array.shape) == 1:
                 feature_array = feature_array.reshape(1, -1)
             
@@ -228,7 +256,7 @@ def compute_shap_explanation(
             [0.5] * len(feature_names)  # Neutral baseline
         ])
         
-        # Initialize SHAP explainer (KernelExplainer is model-agnostic)
+        # Initialize SHAP explainer
         explainer = KernelExplainer(
             model=predict_relevance,
             data=background,
@@ -327,3 +355,4 @@ def get_feature_human_labels(feature_name: str, feature_value: float) -> Tuple[s
     direction = "positive" if feature_value > 0.5 else ("neutral" if feature_value == 0.5 else "negative")
     
     return label, direction
+

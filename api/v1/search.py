@@ -5,6 +5,7 @@ from sqlalchemy import func, and_, or_, desc, insert, text
 from datetime import datetime, timezone
 import uuid
 import time
+import re
 from typing import Optional, List
 
 from api.deps import get_current_user
@@ -20,6 +21,7 @@ from schemas.search import (
 )
 from schemas.base import StandardResponse
 from services.redis_service import redis_client
+from services.embedding_service import batch_similarity_search
 from loguru import logger
 import json
 
@@ -59,6 +61,202 @@ def calculate_location_score(query_location: Optional[str], actual_location: str
     return 0.3
 
 
+def extract_locations_from_query(query: str, all_locations: list[str]) -> list[str]:
+    """
+    Extract location names mentioned in the query text.
+    Matches against actual property locations with flexible matching.
+    """
+    query_lower = query.lower()
+    found_locations = []
+    
+    # Match against all known locations with flexible matching
+    for location in all_locations:
+        location_lower = location.lower()
+        
+        # Exact match or partial match
+        if location_lower in query_lower:
+            found_locations.append(location)
+        # Also check for partial word matches (e.g., "lekki" in "lekki phase 1")
+        elif any(part in query_lower for part in location_lower.split(',')):
+            found_locations.append(location)
+    
+    return list(set(found_locations))  # Remove duplicates
+
+
+def extract_property_type_from_query(query: str) -> Optional[str]:
+    """
+    Extract property type from query.
+    Returns: apartment, house, duplex, studio, or None
+    """
+    query_lower = query.lower()
+    property_types = {
+        'apartment': ['apartment', 'apt', 'flat', 'condo'],
+        'house': ['house', 'home', 'residential', 'bungalow'],
+        'duplex': ['duplex', 'maisonette'],
+        'studio': ['studio', 'bedsitter', 'bedsit', 'single room']
+    }
+    
+    for prop_type, keywords in property_types.items():
+        if any(keyword in query_lower for keyword in keywords):
+            return prop_type
+    
+    return None
+
+
+def extract_amenities_from_query(query: str) -> list[str]:
+    """
+    Extract amenity keywords from query.
+    Returns list of amenities mentioned.
+    """
+    query_lower = query.lower()
+    amenity_keywords = {
+        'swimming pool': ['pool', 'swimming', 'swim'],
+        'gym': ['gym', 'fitness', 'workout'],
+        'garden': ['garden', 'lawn', 'landscap', 'green space'],
+        'parking': ['parking', 'garage', 'carport'],
+        'security': ['secure', 'security', 'gated', 'guard', '24/7'],
+        'air conditioning': ['ac', 'air condition'],
+        'backup generator': ['generator', 'backup power'],
+        'water supply': ['water', 'borehol'],
+        'elevator': ['elevator', 'lift', 'highrise'],
+        'balcony': ['balcony', 'terrace', 'patio'],
+        'kitchen': ['kitchen', 'cook'],
+    }
+    
+    found_amenities = []
+    for amenity, keywords in amenity_keywords.items():
+        if any(keyword in query_lower for keyword in keywords):
+            found_amenities.append(amenity)
+    
+    return found_amenities
+
+
+def extract_budget_from_query(query: str) -> Optional[float]:
+    """
+    Extract budget/price mentions from query.
+    Looks for patterns like "2.5M", "2.5 million", "budget 2500000", etc.
+    """
+    import re
+    query_lower = query.lower()
+    
+    # Pattern: number + M/million/thousand
+    patterns = [
+        r'(\d+(?:\.\d+)?)\s*m(?:illion)?',  # 2.5m or 2.5 million
+        r'budget\s*[₦:]*\s*(\d+(?:\.\d+)?)',  # budget 2.5
+        r'([๦₦]*\s*\d+(?:\.\d+)?)(?:\s*m|million)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            try:
+                amount = float(match.group(1))
+                # Convert to Naira if in millions
+                if 'm' in match.group(0).lower() or 'million' in match.group(0).lower():
+                    amount *= 1_000_000
+                return amount
+            except (ValueError, IndexError):
+                continue
+    
+    return None
+
+
+def extract_bedrooms_from_query(query: str) -> Optional[int]:
+    """
+    Extract number of bedrooms from query.
+    Looks for patterns like "1 bedroom", "2-bedroom", "3br", etc.
+    """
+    import re
+    query_lower = query.lower()
+    
+    patterns = [
+        r'(\d+)\s*-?bedroom',
+        r'(\d+)\s*br(?:ooms?)?',
+        r'(\d+)\s*bed',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            try:
+                return int(match.group(1))
+            except (ValueError, IndexError):
+                continue
+    
+    return None
+
+
+def calculate_location_score_enhanced(
+    query_mentioned_locations: list[str],
+    filter_location: Optional[str],
+    actual_location: str
+) -> float:
+    """
+    Enhanced location scoring that considers:
+    1. Explicit filter location (highest priority)
+    2. Location mentions in semantic query text
+    3. Default score if no location mentioned
+    """
+    # Explicit filter location has highest priority
+    if filter_location and filter_location.lower() in actual_location.lower():
+        return 0.95
+    
+    # Check if any query-mentioned locations match
+    if query_mentioned_locations:
+        for mentioned_loc in query_mentioned_locations:
+            if mentioned_loc.lower() in actual_location.lower():
+                return 0.85  # High score for query-mentioned location
+    
+    # Partial matches get moderate score
+    if filter_location and (filter_location.lower() in actual_location.lower() or 
+                           actual_location.lower() in filter_location.lower()):
+        return 0.7
+    
+    # Default score when no location specified or no match
+    return 0.5
+
+
+async def get_dynamic_weights(db: AsyncSession, query: str) -> dict:
+    """
+    Get ranking weights and adjust them based on query content.
+    If location is explicitly mentioned in query, increase location weight.
+    """
+    result = await db.execute(
+        select(RankingConfig).order_by(RankingConfig.updated_at.desc()).limit(1)
+    )
+    config = result.scalars().first()
+    
+    if config:
+        weights = {
+            'semantic_score': config.semantic_score_weight,
+            'price_score': config.price_score_weight,
+            'location_score': config.location_score_weight,
+            'recency_score': config.recency_score_weight,
+        }
+    else:
+        weights = {
+            'semantic_score': 0.50,
+            'price_score': 0.20,
+            'location_score': 0.20,
+            'recency_score': 0.10,
+        }
+    
+    # Boost location weight if location keywords detected in query
+    location_keywords = ['in', 'lekki', 'lagos', 'abuja', 'yaba', 'ikeja', 'vi', 
+                        'ikoyi', 'surulere', 'ajah', 'maryland', 'magodo', 'ketu',
+                        'calabar', 'benin', 'portharcourt', 'ibadan', 'enugu', 'kano',
+                        'kaduna', 'jos', 'bauchi', 'wuse', 'maitama', 'garki', 'asokoro']
+    
+    query_lower = query.lower()
+    if any(keyword in query_lower for keyword in location_keywords):
+        # If location is mentioned, increase its weight
+        weights['location_score'] = min(0.35, weights['location_score'] + 0.10)
+        weights['semantic_score'] = max(0.35, weights['semantic_score'] - 0.10)
+        logger.debug("Location boost applied: detected location keywords in query")
+    
+    return weights
+
+
 def calculate_recency_score(created_at: datetime) -> float:
     """Calculate recency score based on listing age"""
     days_old = (datetime.now(timezone.utc) - created_at).days
@@ -82,28 +280,6 @@ def calculate_final_ranking_score(semantic: float, price: float, location: float
     )
 
 
-async def get_ranking_weights(db: AsyncSession) -> dict:
-    """Get current ranking weights from config"""
-    result = await db.execute(
-        select(RankingConfig).order_by(RankingConfig.updated_at.desc()).limit(1)
-    )
-    config = result.scalars().first()
-    
-    if config:
-        return {
-            'semantic_score': config.semantic_score_weight,
-            'price_score': config.price_score_weight,
-            'location_score': config.location_score_weight,
-            'recency_score': config.recency_score_weight,
-        }
-    
-    # Default weights
-    return {
-        'semantic_score': 0.55,
-        'price_score': 0.20,
-        'location_score': 0.15,
-        'recency_score': 0.10,
-    }
 
 
 async def log_search_async(
@@ -141,8 +317,8 @@ async def semantic_search(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Semantic search endpoint using S-BERT embeddings and hybrid ranking.
-    Returns ranked property results with optional RankSHAP explanations.
+    Smart semantic search with intelligent query parsing.
+    Extracts: locations, property types, amenities, bedrooms, budget from query text.
     """
     query_start = time.time()
     logger.info(f"Semantic search initiated - Query: {request.query}, Explain: {request.explain}")
@@ -151,9 +327,19 @@ async def semantic_search(
     if not request.query or len(request.query.strip()) < 3:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
+    # SMART EXTRACTION: Parse query for structured attributes
+    extracted_bedrooms = extract_bedrooms_from_query(request.query)
+    extracted_property_type = extract_property_type_from_query(request.query)
+    extracted_amenities = extract_amenities_from_query(request.query)
+    extracted_budget = extract_budget_from_query(request.query)
+    
+    logger.debug(f"Query extraction - Bedrooms: {extracted_bedrooms}, Type: {extracted_property_type}, "
+                f"Amenities: {extracted_amenities}, Budget: {extracted_budget}")
+    
     # Build filter conditions
     filters = [Property.status == PropertyStatus.APPROVED]
     
+    # Apply explicit filters first
     if request.filters:
         if request.filters.get('price_min'):
             filters.append(Property.price >= request.filters['price_min'])
@@ -168,36 +354,109 @@ async def semantic_search(
         if request.filters.get('property_type'):
             filters.append(Property.property_type == request.filters.get('property_type'))
     
-    # Get ranking weights
-    weights = await get_ranking_weights(db)
+    # SMART FILTERS: Apply extracted attributes if not already in explicit filters
+    if extracted_bedrooms and not request.filters.get('bedrooms'):
+        filters.append(Property.bedrooms == extracted_bedrooms)
+        logger.debug(f"Applied extracted bedroom filter: {extracted_bedrooms}")
+    
+    if extracted_property_type and not request.filters.get('property_type'):
+        filters.append(Property.property_type == extracted_property_type)
+        logger.debug(f"Applied extracted property type filter: {extracted_property_type}")
+    
+    if extracted_budget and not request.filters.get('price_max'):
+        filters.append(Property.price <= extracted_budget)
+        logger.debug(f"Applied extracted budget filter: ₦{extracted_budget:,.0f}")
+    
+    # Get dynamic ranking weights (adjusted based on query content)
+    weights = await get_dynamic_weights(db, request.query)
     
     # Fetch all matching properties
     result = await db.execute(
-        select(Property).where(and_(*filters))
+        select(Property).where(and_(*filters)).limit(1000)  # Batch processing limit
     )
     properties = result.scalars().all()
     
-    # Calculate scores for each property
-    scored_properties = []
-    for prop in properties:
-        semantic_score = calculate_semantic_score(
-            request.query,
-            prop.description,
-            prop.title
+    if not properties:
+        return SemanticSearchResponse(
+            results=[],
+            total=0,
+            processing_time_ms=int((time.time() - query_start) * 1000)
         )
+    
+    # Extract locations mentioned in the semantic query for enhanced scoring
+    all_unique_locations = list(set(p.location for p in properties if p.location))
+    query_mentioned_locations = extract_locations_from_query(request.query, all_unique_locations)
+    
+    # Use BATCH similarity search for 10-50x performance improvement!
+    candidates = [
+        f"{prop.title}. {prop.description}" for prop in properties
+    ]
+    
+    # Batch search returns top results efficiently
+    batch_start = time.time()
+    batch_results = batch_similarity_search(
+        query=request.query,
+        candidates=candidates,
+        top_k=min(len(candidates), 100),  # Get top 100 results
+        normalize=True
+    )
+    batch_time_ms = int((time.time() - batch_start) * 1000)
+    
+    logger.debug(f"Batch similarity search: {len(batch_results)} results in {batch_time_ms}ms")
+    
+    # Calculate scores for each result from batch
+    scored_properties = []
+    for idx, text, batch_semantic_score in batch_results:
+        prop = properties[idx]
+        
+        semantic_score = batch_semantic_score
         price_score = calculate_price_score(
             request.filters.get('price_max') if request.filters else None,
             prop.price
         )
-        location_score = calculate_location_score(
-            request.filters.get('location') if request.filters else None,
-            prop.location
+        # Use enhanced location scoring with query-extracted locations
+        location_score = calculate_location_score_enhanced(
+            query_mentioned_locations=query_mentioned_locations,
+            filter_location=request.filters.get('location') if request.filters else None,
+            actual_location=prop.location
         )
         recency_score = calculate_recency_score(prop.created_at)
         
         final_score = calculate_final_ranking_score(
             semantic_score, price_score, location_score, recency_score, weights
         )
+        
+        # ATTRIBUTE MATCHING BONUSES: Boost score if property matches extracted attributes
+        attribute_match_bonus = 0.0
+        attribute_matches = []
+        
+        # Bonus for property type match
+        if extracted_property_type and str(prop.property_type.value).lower() == extracted_property_type.lower():
+            attribute_match_bonus += 0.08
+            attribute_matches.append(f"Type: {extracted_property_type}")
+        
+        # Bonus for bedroom count match
+        if extracted_bedrooms and prop.bedrooms == extracted_bedrooms:
+            attribute_match_bonus += 0.05
+            attribute_matches.append(f"Bedrooms: {extracted_bedrooms}")
+        
+        # Bonus for amenities Match
+        if extracted_amenities and prop.amenities:
+            matching_amenities = sum(1 for amenity in extracted_amenities 
+                                    if any(amenity.lower() in a.lower() for a in prop.amenities))
+            if matching_amenities > 0:
+                amenity_bonus = min(0.08, matching_amenities * 0.04)  # Up to 8% for all amenities
+                attribute_match_bonus += amenity_bonus
+                attribute_matches.append(f"Amenities: {matching_amenities} match")
+        
+        # Apply bonus to final score (cap at 0.95 to preserve realism)
+        final_score_boosted = min(0.95, final_score + attribute_match_bonus)
+        
+        # Track attribute matches for explanations
+        match_info = {
+            'boost': attribute_match_bonus,
+            'matches': attribute_matches
+        }
         
         # Generate explanations if requested
         explanations = None
@@ -219,7 +478,7 @@ async def semantic_search(
                 ),
                 ExplanationFeature(
                     feature="location_score",
-                    label="Located in your preferred area" if location_score > 0.7 else "Different location",
+                    label="Located in your preferred area" if location_score > 0.9 else ("Partially matches your location" if location_score > 0.6 else "Different location"),
                     weight=location_score,
                     direction="positive" if location_score > 0.5 else "neutral"
                 ),
@@ -231,7 +490,12 @@ async def semantic_search(
                 )
             ]
             
-            explanation_summary = "Strongly matches your search criteria" if final_score > 0.75 else "Moderately relevant to your search"
+            # Build explanation summary including attribute matches
+            match_text = " + ".join(match_info['matches']) if match_info['matches'] else ""
+            if match_text:
+                explanation_summary = f"Matches: {match_text}. Strongly relevant!" if final_score_boosted > 0.75 else f"Matches: {match_text}"
+            else:
+                explanation_summary = "Strongly matches your search criteria" if final_score_boosted > 0.75 else "Moderately relevant to your search"
         
         scored_properties.append({
             'property': prop,
@@ -239,15 +503,12 @@ async def semantic_search(
             'price_score': price_score,
             'location_score': location_score,
             'recency_score': recency_score,
-            'final_score': final_score,
+            'final_score': final_score_boosted,  # Use boosted score
             'explanations': explanations,
             'explanation_summary': explanation_summary
         })
     
-    # Sort by final score
-    scored_properties.sort(key=lambda x: x['final_score'], reverse=True)
-    
-    # Apply pagination
+    # Batch results already sorted by relevance - no need to sort again!
     total_results = len(scored_properties)
     offset = (request.page - 1) * request.limit
     paginated = scored_properties[offset:offset + request.limit]

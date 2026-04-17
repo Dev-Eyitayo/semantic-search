@@ -15,7 +15,7 @@ from core.config import settings
 from db.session import get_db
 from db.models.user import User, RefreshToken
 from schemas.auth import (
-    UserCreate, UserResponse, UserLogin, Token, TokenRefreshRequest,
+    UserCreate, VerifyEmailRequest, UserResponse, UserLogin, Token, TokenRefreshRequest,
     PasswordResetRequest, AccessTokenResponse, PasswordResetConfirm
 )
 from schemas.base import StandardResponse
@@ -67,13 +67,17 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
         )
     )
 
-@router.post("/verify-otp", response_model=StandardResponse[None])
-async def verify_otp(email: str, otp: str, db: AsyncSession = Depends(get_db)):
+
+@router.post("/verify-email", response_model=StandardResponse[None])
+async def verify_email(
+    payload: VerifyEmailRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
     Validates OTP against Redis and activates the account.
     """
-    email_lower = email.lower()
-    is_valid = await verify_otp_code(email_lower, otp)
+    email_lower = payload.email.lower()
+    is_valid = await verify_otp_code(email_lower, payload.otp)
     
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
@@ -90,6 +94,7 @@ async def verify_otp(email: str, otp: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     
     return StandardResponse(message="Email verified successfully. You can now login.")
+
 
 @router.post("/login", response_model=StandardResponse[Token])
 async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
