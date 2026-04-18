@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError 
+from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from api.v1 import auth, users, properties, media, search, ai, admin
 from fastapi.responses import JSONResponse
@@ -33,6 +34,9 @@ app = FastAPI(
     redoc_url="/redoc",
     swagger_ui_init_oauth={},  # Disable OAuth default behavior
 )
+
+
+
 
 # Add Bearer token security scheme documentation
 from fastapi.openapi.utils import get_openapi
@@ -180,6 +184,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "data": error_details
         }
     )
+
+
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+]
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,            # Allowed origins
+    allow_credentials=True,           # Allow cookies/auth headers
+    allow_methods=["*"],               # Allowed HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],               # Allowed HTTP headers
+)
+
 
 @app.get("/", tags=["General"])
 async def root():
