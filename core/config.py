@@ -10,6 +10,7 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    PROD: bool = False
 
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     MAIL_FROM: Optional[str] = None
     MAIL_PORT: int = 587
     MAIL_SERVER: Optional[str] = None
+    
 
     CLOUDINARY_CLOUD_NAME: str = "your-cloud-name"
     CLOUDINARY_API_KEY: str = "your-api-key"

@@ -1,9 +1,17 @@
 import redis.asyncio as redis
 from core.config import settings
 
+use_ssl = settings.REDIS_URL.startswith("rediss://")
 
+# 2. Build your connection arguments dynamically
+redis_kwargs = {
+    "decode_responses": True,
+}
+if use_ssl:
+    redis_kwargs["ssl_cert_reqs"] = None 
 
-redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+redis_client = redis.from_url(settings.REDIS_URL, **redis_kwargs)
+
 
 async def blacklist_token(jti: str, ttl: int):
     """

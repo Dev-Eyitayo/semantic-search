@@ -15,7 +15,7 @@ from core.config import settings
 from db.session import get_db
 from db.models.user import User, RefreshToken
 from schemas.auth import (
-    UserCreate, VerifyEmailRequest, UserResponse, UserLogin, Token, TokenRefreshRequest,
+    UserCreate, VerifyEmailRequest, ResendOTPRequest, UserResponse, UserLogin, Token, TokenRefreshRequest,
     PasswordResetRequest, AccessTokenResponse, PasswordResetConfirm
 )
 from schemas.base import StandardResponse
@@ -68,6 +68,9 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     )
 
 
+
+
+
 @router.post("/verify-email", response_model=StandardResponse[None])
 async def verify_email(
     payload: VerifyEmailRequest,
@@ -96,6 +99,36 @@ async def verify_email(
     return StandardResponse(message="Email verified successfully. You can now login.")
 
 
+
+@router.post("/resend-otp", response_model=StandardResponse[dict])
+async def resend_otp(payload: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Resends the verification OTP if the user exists and is not verified.
+    """
+    email_lower = payload.email.lower()
+    
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == email_lower)
+    )
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if getattr(user, "is_verified", False):
+        raise HTTPException(status_code=400, detail="Email already verified")
+
+    otp_code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    
+    await store_otp(email_lower, otp_code, expire_seconds=600)
+    
+    logger.info(f"Resending OTP to {email_lower}")
+    send_verification_email.delay(user.email, user.first_name, otp_code)
+    
+    return StandardResponse(
+        message="A new OTP has been sent to your email.",
+        data={"email": email_lower}
+    )
+
 @router.post("/login", response_model=StandardResponse[Token])
 async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
     """
@@ -110,7 +143,7 @@ async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
     user = result.scalars().first()
     
     if not user or not verify_password(user_in.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
     
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Account not verified")

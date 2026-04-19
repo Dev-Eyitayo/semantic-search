@@ -86,52 +86,70 @@ app.openapi = custom_openapi
 
 # Startup and Shutdown Events
 
+# @app.on_event("startup")
+# async def startup_event():
+#     """
+#     Initialize AI models on startup with warm-up.
+#     Prevents cold starts and ensures models are ready before serving requests.
+#     """
+#     logger.info("🚀 Application startup: Initializing AI models...")
+    
+#     try:
+#         # Warm up embedding model
+#         from services.embedding_service import get_embedding_model, get_cache_stats
+#         logger.info("Loading and warming up embedding model...")
+        
+#         embedding_model = get_embedding_model(warmup=True)
+#         logger.success(f"✓ Embedding model ready: all-MiniLM-L6-v2 (384 dims)")
+        
+#         # Optional: Warm up reranker model
+#         try:
+#             from services.ai_service import get_reranker_model
+#             logger.info("Loading reranker model...")
+#             reranker = get_reranker_model()
+#             logger.success("✓ Reranker model ready: cross-encoder/ms-marco-MiniLM-L-6-v2")
+#         except Exception as e:
+#             logger.warning(f"Reranker model warmup skipped: {e}")
+        
+#         # Log cache stats
+#         cache_stats = get_cache_stats()
+#         logger.info(
+#             f"✓ Embedding cache initialized "
+#             f"(max size: {cache_stats['max_size']}, "
+#             f"current: {cache_stats['cache_size']})"
+#         )
+        
+#         logger.success("🎉 AI models initialized and ready!")
+#         logger.info("=" * 60)
+#         logger.info("📊 Embedding Configuration:")
+#         logger.info("  • Model: all-MiniLM-L6-v2 (optimized, 384 dims)")
+#         logger.info("  • Batch Processing: ✓ Enabled")
+#         logger.info("  • Caching: ✓ Enabled")
+#         logger.info("  • Background Tasks: ✓ Support for FastAPI & Celery")
+#         logger.info("=" * 60)
+    
+#     except Exception as e:
+#         logger.error(f"❌ Startup failed: {e}")
+#         # Don't crash the app, but log the warning
+#         logger.warning("App starting without prewarmed models (will load on first request)")
+
+
 @app.on_event("startup")
 async def startup_event():
-    """
-    Initialize AI models on startup with warm-up.
-    Prevents cold starts and ensures models are ready before serving requests.
-    """
-    logger.info("🚀 Application startup: Initializing AI models...")
+    logger.info("🚀 Application startup: Checking AI Configuration...")
     
+    # ONLY load the light embedding model if absolutely necessary for the API
+    # Otherwise, let the Worker handle both to save RAM
     try:
-        # Warm up embedding model
-        from services.embedding_service import get_embedding_model, get_cache_stats
-        logger.info("Loading and warming up embedding model...")
+        from services.embedding_service import get_embedding_model
+        # Only load the small one
+        _ = get_embedding_model(warmup=False) 
+        logger.success("✓ Embedding service initialized")
         
-        embedding_model = get_embedding_model(warmup=True)
-        logger.success(f"✓ Embedding model ready: all-MiniLM-L6-v2 (384 dims)")
-        
-        # Optional: Warm up reranker model
-        try:
-            from services.ai_service import get_reranker_model
-            logger.info("Loading reranker model...")
-            reranker = get_reranker_model()
-            logger.success("✓ Reranker model ready: cross-encoder/ms-marco-MiniLM-L-6-v2")
-        except Exception as e:
-            logger.warning(f"Reranker model warmup skipped: {e}")
-        
-        # Log cache stats
-        cache_stats = get_cache_stats()
-        logger.info(
-            f"✓ Embedding cache initialized "
-            f"(max size: {cache_stats['max_size']}, "
-            f"current: {cache_stats['cache_size']})"
-        )
-        
-        logger.success("🎉 AI models initialized and ready!")
-        logger.info("=" * 60)
-        logger.info("📊 Embedding Configuration:")
-        logger.info("  • Model: all-MiniLM-L6-v2 (optimized, 384 dims)")
-        logger.info("  • Batch Processing: ✓ Enabled")
-        logger.info("  • Caching: ✓ Enabled")
-        logger.info("  • Background Tasks: ✓ Support for FastAPI & Celery")
-        logger.info("=" * 60)
-    
+        # REMOVE OR COMMENT OUT the Reranker warmup here. 
+        # The Reranker is heavy (~200MB+ RAM) and should only live in the Worker.
     except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
-        # Don't crash the app, but log the warning
-        logger.warning("App starting without prewarmed models (will load on first request)")
+        logger.warning(f"AI models will load on demand: {e}")
 
 
 @app.on_event("shutdown")

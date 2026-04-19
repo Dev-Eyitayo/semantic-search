@@ -117,7 +117,7 @@ def extract_amenities_from_query(query: str) -> list[str]:
         'security': ['secure', 'security', 'gated', 'guard', '24/7'],
         'air conditioning': ['ac', 'air condition'],
         'backup generator': ['generator', 'backup power'],
-        'water supply': ['water', 'borehol'],
+        'water supply': ['water', 'borehole'],
         'elevator': ['elevator', 'lift', 'highrise'],
         'balcony': ['balcony', 'terrace', 'patio'],
         'kitchen': ['kitchen', 'cook'],

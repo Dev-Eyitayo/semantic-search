@@ -7,13 +7,22 @@ celery_app = Celery(
     backend=settings.REDIS_URL
 )
 
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-)
+celery_config = {
+    "task_serializer": "json",
+    "accept_content": ["json"],
+    "result_serializer": "json",
+    "timezone": "UTC",
+    "enable_utc": True,
+}
 
+if settings.REDIS_URL.startswith("rediss://"):
+    ssl_conf = {
+        'ssl_cert_reqs': None 
+    }
+    celery_config["broker_use_ssl"] = ssl_conf
+    celery_config["redis_backend_use_ssl"] = ssl_conf
+
+# 3. Apply the config
+celery_app.conf.update(celery_config)
 
 celery_app.autodiscover_tasks(["services"])
