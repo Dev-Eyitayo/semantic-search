@@ -39,167 +39,64 @@ async def get_current_user_profile(
     )
 
 
-# @router.put("/me", response_model=StandardResponse[dict])
-# async def update_profile(
-#     user_update: UserUpdate,
-#     current_user: User = Depends(get_current_user),
-#     db: AsyncSession = Depends(get_db)
-# ):
-#     """
-#     Update the authenticated user's profile information (name, phone, avatar).
-#     """
-#     logger.info(f"Profile update initiated for user: {current_user.email}")
-    
-#     # Update only provided fields
-#     if user_update.first_name:
-#         current_user.first_name = user_update.first_name
-#     if user_update.last_name:
-#         current_user.last_name = user_update.last_name
-#     if user_update.phone:
-#         current_user.phone = user_update.phone
-#     if user_update.avatar_url:
-#         current_user.avatar_url = user_update.avatar_url
-    
-#     current_user.updated_at = datetime.now(timezone.utc)
-#     await db.commit()
-#     await db.refresh(current_user)
-    
-#     logger.success(f"Profile updated successfully for user: {current_user.email}")
-    
-#     return StandardResponse(
-#         message="Profile updated successfully",
-#         data={"user": UserResponse.model_validate(current_user)}
-#     )
-
 
 @router.put("/me", response_model=StandardResponse[dict], status_code=200)
 async def update_profile(
-    first_name: Optional[str] = Form(None, min_length=2, max_length=100),
-    last_name: Optional[str] = Form(None, min_length=2, max_length=100),
-    phone: Optional[str] = Form(None, description="Nigerian phone number (08012345678, 2348012345678, or +2348012345678)"),
-    avatar: Optional[UploadFile] = File(None, description="Avatar image file (JPEG|PNG|WebP, max 2MB)"),
+    user_data: UserUpdate = Depends(UserUpdate.as_form),
+    avatar: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
-    """
-    Can update:
-    - Profile fields: first_name, last_name, phone
-    - Avatar media: avatar image file
-    All fields are optional - only provided fields will be updated.
-    """
-    logger.info(f"Profile update initiated for user: {current_user.email}")
+
+    logger.info(f"Profile update initiated for: {current_user.email}")
     
     updates_made = []
     avatar_url = None
-    file_content = None
-    
-    
-    # Validate phone if provided (but don't update yet)
-    normalized_phone = None
-    if phone:
-        try:
-            normalized_phone = normalize_nigerian_phone(phone)
-            logger.debug(f"Phone number validated for user: {current_user.email}")
-        except ValueError as e:
-            logger.warning(f"Invalid phone format for user: {current_user.email} - {e}")
-            raise HTTPException(status_code=400, detail=str(e))
-    
-    # Validate avatar file if provided (but don't upload yet)
-    MAX_AVATAR_SIZE_MB = 2
-    if avatar:
-        logger.info(f"Avatar file validation initiated for user: {current_user.email}")
-        
-        try:
-            # Read file content
-            file_content = await avatar.read()
-            
-            # Validate file (raises HTTPException if invalid)
-            is_valid, error_msg = CloudinaryService.validate_file(
-                file_content,
-                avatar.filename,
-                "avatar",
-                MAX_AVATAR_SIZE_MB
-            )
-            
-            if not is_valid:
-                logger.warning(f"Invalid avatar file for user: {current_user.email} - {error_msg}")
-                raise HTTPException(status_code=400, detail=error_msg)
-            
-            logger.debug(f"Avatar file validated successfully for user: {current_user.email}")
-            
-        except HTTPException:
-            # Re-raise validation errors immediately (no file upload happens)
-            raise
-        except Exception as e:
-            logger.error(f"Error validating avatar file for user: {current_user.email} - {e}")
-            raise HTTPException(status_code=422, detail="Invalid avatar file")
-    
 
-    if file_content is not None:
-        logger.info(f"Avatar upload to Cloudinary started for user: {current_user.email}")
-        
+    if avatar:
         try:
-            # Upload to Cloudinary (only if validation passed above)
-            upload_result = CloudinaryService.upload_avatar(
-                file_content,
-                avatar.filename,
-                str(current_user.id)
+            file_content = await avatar.read()
+            # Validate size/type via Cloudinary service
+            is_valid, error_msg = CloudinaryService.validate_file(
+                file_content, avatar.filename, "avatar", 2
             )
-            
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_msg)
+
+            # Upload
+            upload_result = CloudinaryService.upload_avatar(
+                file_content, avatar.filename, str(current_user.id)
+            )
             avatar_url = upload_result['secure_url']
-            logger.success(f"Avatar uploaded to Cloudinary for user: {current_user.email}")
-            
+            current_user.avatar_url = avatar_url
+            updates_made.append("avatar")
         except Exception as e:
-            logger.error(f"Cloudinary upload failed for user: {current_user.email} - {e}")
-            raise HTTPException(status_code=503, detail="Failed to upload avatar to storage service")
+            logger.error(f"Avatar processing failed: {e}")
+            raise HTTPException(status_code=503, detail="Storage service unavailable")
+
+    update_dict = user_data.model_dump(exclude_unset=True)
     
-    
-    # Update profile fields in memory (no DB commit yet)
-    if first_name:
-        current_user.first_name = first_name
-        updates_made.append("first_name")
-        logger.debug(f"Updated first_name in memory for user: {current_user.email}")
-    
-    if last_name:
-        current_user.last_name = last_name
-        updates_made.append("last_name")
-        logger.debug(f"Updated last_name in memory for user: {current_user.email}")
-    
-    if normalized_phone is not None:
-        current_user.phone = normalized_phone
-        updates_made.append("phone")
-        logger.debug(f"Updated phone in memory for user: {current_user.email}")
-    
-    # Update avatar URL if upload succeeded
-    if avatar_url:
-        current_user.avatar_url = avatar_url
-        updates_made.append("avatar")
-        logger.debug(f"Updated avatar_url in memory for user: {current_user.email}")
-    
+    for field, value in update_dict.items():
+        setattr(current_user, field, value)
+        updates_made.append(field)
 
     if updates_made:
         try:
             current_user.updated_at = datetime.now(timezone.utc)
             await db.commit()
             await db.refresh(current_user)
-            logger.success(f"Profile updated in database for user: {current_user.email} - Updates: {', '.join(updates_made)}")
+            logger.success(f"Profile updated: {', '.join(updates_made)}")
         except Exception as e:
-            logger.error(f"Database commit failed for user: {current_user.email} - {e}")
-            raise HTTPException(status_code=500, detail="Failed to save profile changes")
-    else:
-        logger.info(f"No updates provided for user: {current_user.email}")
-    
+            logger.error(f"DB Update failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to save changes")
+
     return StandardResponse(
-        message="Profile updated successfully" if updates_made else "No updates provided",
+        message="Profile updated" if updates_made else "No changes detected",
         data={
             "user": UserResponse.model_validate(current_user),
-            "updates_applied": updates_made,
-            "avatar_url": avatar_url
-        },
-        meta={"fields_updated": len(updates_made)}
+            "updates_applied": updates_made
+        }
     )
-
 
 @router.post("/me/change-password", response_model=StandardResponse[None])
 async def change_password(

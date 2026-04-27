@@ -86,7 +86,7 @@ class PropertyResponse(BaseModel):
     view_count: int
     created_at: datetime
     lister: Optional[ListerInfo] = None
-
+    
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -99,6 +99,7 @@ class PropertyListResponse(BaseModel):
     bedrooms: int
     bathrooms: int
     property_type: PropertyType
+    lister: Optional[ListerInfo] = None
     thumbnail: Optional[str] = None
     created_at: datetime
 
@@ -120,6 +121,7 @@ class PropertyListingResponse(BaseModel):
     price: float
     created_at: datetime
     thumbnail: Optional[str] = None
+    lister: Optional[ListerInfo] = None
     rejection_reason: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

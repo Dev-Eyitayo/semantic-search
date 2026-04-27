@@ -6,12 +6,13 @@ Includes CRUD operations and property search functionality.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy import desc
 from datetime import datetime, timezone
 import uuid
 from typing import Optional
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_current_user_optional
 from db.session import get_db
 from db.models.user import User
 from db.models.property import Property
@@ -25,66 +26,56 @@ from loguru import logger
 router = APIRouter()
 
 
-@router.get("", response_model=StandardResponse[PropertyListWithPagination], tags=["Properties"])
+from sqlalchemy import func, desc
+from sqlalchemy.orm import joinedload
+
+@router.get("/", response_model=StandardResponse[PropertyListWithPagination], tags=["Properties"])
 async def list_properties(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(lambda: None)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
-    """
-    List all properties with optional filtering.
-    Public endpoint - shows only APPROVED properties unless user is admin/lister.
-    """
-    logger.info(f"Listing properties - Page: {page}, Limit: {limit}")
-    
-    # Build query
-    query = select(Property)
-    
-    # Non-admin users only see APPROVED properties
+    query = select(Property).options(selectinload(Property.lister))
+
+
     if not current_user or current_user.role == UserRole.SEEKER:
         query = query.where(Property.status == PropertyStatus.APPROVED)
     elif current_user.role == UserRole.LISTER:
-        # Listers see their own properties + APPROVED properties
         query = query.where(
             (Property.status == PropertyStatus.APPROVED) |
             (Property.lister_id == current_user.id)
         )
-    # Admins see all properties
-    
-    # Apply filters
+        
     if status:
         try:
-            status_enum = PropertyStatus[status.upper()]
-            query = query.where(Property.status == status_enum)
+            query = query.where(Property.status == PropertyStatus[status.upper()])
         except KeyError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
     
     if location:
         query = query.where(Property.location.ilike(f"%{location}%"))
-    
-    # Get total count
-    count_result = await db.execute(query)
-    all_properties = count_result.scalars().all()
-    total_count = len(all_properties)
-    
-    # Paginate
+
+    count_stmt = select(func.count()).select_from(query.subquery())
+    total_count = (await db.execute(count_stmt)).scalar_one()
+
     offset = (page - 1) * limit
     result = await db.execute(
-        query.order_by(desc(Property.created_at)).offset(offset).limit(limit)
+        query.order_by(desc(Property.created_at))
+             .offset(offset)
+             .limit(limit)
     )
-    properties = result.scalars().all()
     
-    logger.info(f"Retrieved {len(properties)} properties")
-    
-    pages = (total_count + limit - 1) // limit  # Ceiling division
-    
+    properties = result.unique().scalars().all()
+
+    pages = (total_count + limit - 1) // limit
+
     return StandardResponse(
         message="Properties retrieved successfully",
         data=PropertyListWithPagination(
-            properties=[PropertyResponse.model_validate(p) for p in properties],
+            properties=properties,
             total=total_count,
             page=page,
             limit=limit,
@@ -92,21 +83,22 @@ async def list_properties(
         )
     )
 
-
 @router.get("/{property_id}", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
 async def get_property(
     property_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(lambda: None)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
     Get a specific property by ID.
     Only returns APPROVED properties unless user is admin/lister of that property.
     """
     result = await db.execute(
-        select(Property).where(Property.id == property_id)
+        select(Property)
+        .where(Property.id == property_id)
+        .options(joinedload(Property.lister))
     )
-    property_obj = result.scalars().first()
+    property_obj = result.unique().scalars().first()
     
     if not property_obj:
         raise HTTPException(status_code=404, detail="Property not found")
@@ -124,11 +116,11 @@ async def get_property(
     
     return StandardResponse(
         message="Property retrieved successfully",
-        data=PropertyResponse.model_validate(property_obj)
+        data=property_obj
     )
 
 
-@router.post("", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
+@router.post("/", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
 async def create_property(
     property_data: PropertyCreate,
     db: AsyncSession = Depends(get_db),
@@ -162,7 +154,7 @@ async def create_property(
         amenities=property_data.amenities or [],
         images=property_data.images or [],
         thumbnail=property_data.thumbnail,
-        status=PropertyStatus.PENDING_REVIEW,  # New properties start as pending
+        status=PropertyStatus.PENDING_REVIEW,
         created_at=datetime.now(timezone.utc)
     )
     
@@ -174,7 +166,7 @@ async def create_property(
     
     return StandardResponse(
         message="Property created successfully",
-        data=PropertyResponse.model_validate(new_property)
+        data=new_property
     )
 
 
@@ -190,9 +182,11 @@ async def update_property(
     Only the lister who created it can update it.
     """
     result = await db.execute(
-        select(Property).where(Property.id == property_id)
+        select(Property)
+        .where(Property.id == property_id)
+        .options(joinedload(Property.lister))
     )
-    property_obj = result.scalars().first()
+    property_obj = result.unique().scalars().first()
     
     if not property_obj:
         raise HTTPException(status_code=404, detail="Property not found")
@@ -220,7 +214,7 @@ async def update_property(
     
     return StandardResponse(
         message="Property updated successfully",
-        data=PropertyResponse.model_validate(property_obj)
+        data=property_obj
     )
 
 

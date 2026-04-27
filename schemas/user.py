@@ -1,5 +1,6 @@
 import re
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from fastapi import Form
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
@@ -21,11 +22,11 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+
 class UserUpdate(BaseModel):
     first_name: Optional[str] = Field(None, min_length=2, max_length=100)
     last_name: Optional[str] = Field(None, min_length=2, max_length=100)
-    phone: Optional[str] = Field(None, description="Nigerian phone number (08012345678, 2348012345678, or +2348012345678)")
-    avatar_url: Optional[str] = Field(None, max_length=500)
+    phone: Optional[str] = Field(None)
 
     @field_validator("phone")
     @classmethod
@@ -34,6 +35,18 @@ class UserUpdate(BaseModel):
             return normalize_nigerian_phone(v)
         return v
 
+    @classmethod
+    def as_form(
+        cls,
+        first_name: Optional[str] = Form(None),
+        last_name: Optional[str] = Form(None),
+        phone: Optional[str] = Form(None),
+    ):
+        return cls(
+            first_name=first_name, 
+            last_name=last_name, 
+            phone=phone
+        )
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=8)
