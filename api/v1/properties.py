@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 import uuid
 from typing import Optional
 
+from sqlalchemy import func, desc, or_
+from sqlalchemy.orm import selectinload, joinedload
+from core.enums import PropertyType, PriceType
+
+
 from api.deps import get_current_user, get_current_user_optional
 from db.session import get_db
 from db.models.user import User
@@ -26,8 +31,31 @@ from loguru import logger
 router = APIRouter()
 
 
-from sqlalchemy import func, desc
-from sqlalchemy.orm import joinedload
+
+@router.get("/meta/filters", tags=["Properties"])
+async def get_filter_metadata(db: AsyncSession = Depends(get_db)):
+    """
+    Returns available locations and types to populate frontend dropdowns.
+    Optimized to only return locations that actually have active listings.
+    """
+
+    result = await db.execute(
+        select(Property.location)
+        .where(Property.status == PropertyStatus.APPROVED)
+        .distinct()
+    )
+    locations = result.scalars().all()
+    
+    return StandardResponse(
+        message="Filter metadata retrieved",
+        data={
+            "property_types": [e.value for e in PropertyType],
+            "price_types": [e.value for e in PriceType],
+            "locations": locations,
+            "price_steps": [500000, 1000000, 5000000, 10000000, 50000000]
+        }
+    )
+
 
 @router.get("/", response_model=StandardResponse[PropertyListWithPagination], tags=["Properties"])
 async def list_properties(
@@ -35,28 +63,47 @@ async def list_properties(
     limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
+    min_price: Optional[float] = Query(None),
+    max_price: Optional[float] = Query(None),
+    property_type: Optional[PropertyType] = Query(None),
+    bedrooms: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
+    # 1. Base query with optimized relationship loading
     query = select(Property).options(selectinload(Property.lister))
 
-
+    # 2. Permission-based Visibility
     if not current_user or current_user.role == UserRole.SEEKER:
         query = query.where(Property.status == PropertyStatus.APPROVED)
     elif current_user.role == UserRole.LISTER:
         query = query.where(
-            (Property.status == PropertyStatus.APPROVED) |
-            (Property.lister_id == current_user.id)
+            or_(
+                Property.status == PropertyStatus.APPROVED,
+                Property.lister_id == current_user.id
+            )
         )
-        
+
     if status:
         try:
             query = query.where(Property.status == PropertyStatus[status.upper()])
         except KeyError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
     
-    if location:
+    if location and location.lower() != "all":
         query = query.where(Property.location.ilike(f"%{location}%"))
+
+    if min_price:
+        query = query.where(Property.price >= min_price)
+    
+    if max_price:
+        query = query.where(Property.price <= max_price)
+    
+    if property_type:
+        query = query.where(Property.property_type == property_type)
+        
+    if bedrooms:
+        query = query.where(Property.bedrooms >= bedrooms)
 
     count_stmt = select(func.count()).select_from(query.subquery())
     total_count = (await db.execute(count_stmt)).scalar_one()
@@ -69,7 +116,6 @@ async def list_properties(
     )
     
     properties = result.unique().scalars().all()
-
     pages = (total_count + limit - 1) // limit
 
     return StandardResponse(
