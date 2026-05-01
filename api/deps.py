@@ -1,5 +1,5 @@
 from fastapi import Depends, HTTPException, status, Security
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,26 +14,24 @@ from loguru import logger
 import uuid
 
 
-security_scheme = HTTPBearer(description="Bearer token - paste your JWT access token here")
+security_scheme = HTTPBearer(description="Bearer token - paste your JWT access token here", auto_error=False)
 
 
 async def get_current_user(
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    _ = Depends(security_scheme)
+    db: AsyncSession = Depends(get_db)
 ) -> User:
+    logger.info(f"Cookies detected: {request.cookies}")
+    logger.info(f"Authorization Header detected: {request.headers.get('authorization')}")
 
-    token = None
-
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-    
-    if not token:
-        token = request.cookies.get("access_token")
+    token = request.cookies.get("access_token")
 
     if not token:
-        logger.warning("Authentication failed: No token found in header or cookie")
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ")[1]
+    if not token:
+        logger.warning("No token provided in cookie or header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Not authenticated"
@@ -47,8 +45,8 @@ async def get_current_user(
         if await is_token_blacklisted(jti):
             raise HTTPException(status_code=401, detail="Token has been revoked")
             
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
             
         result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
         user = result.scalars().first()
@@ -61,8 +59,10 @@ async def get_current_user(
             
         return user
 
-    except JWTError:
+    except JWTError as e:
+        logger.error(f"JWT Validation Error: {str(e)}")
         raise HTTPException(status_code=401, detail="Could not validate token")
+    
 
 async def get_current_user_optional(
     request: Request,

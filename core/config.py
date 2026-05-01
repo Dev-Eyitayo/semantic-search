@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     )
 
     PROD: bool = False
+    INCLUDE_TOKENS_IN_JSON: bool = False
 
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
@@ -20,7 +21,8 @@ class Settings(BaseSettings):
 
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
+    REFRESH_TOKEN_EXPIRE_HOURS: int = 24
 
 
     PROJECT_NAME: str = "Sheltly"

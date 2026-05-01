@@ -1,6 +1,6 @@
 import secrets
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status,  Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, select, update
@@ -26,6 +26,28 @@ from services.mail_service import send_verification_email, send_password_reset_o
 from loguru import logger   
 
 router = APIRouter()
+# cookie_params = {
+#     "httponly": True,
+#     "samesite": "lax",
+#     "secure": False,  
+#     "path": "/",
+#     "domain": None
+# }
+
+# Create a helper to validate settings
+def get_safe_cookie_params():
+    params = {
+        "httponly": True,
+        "path": "/",
+        "domain": None,
+    }
+    # Logic: If samesite is None, Secure MUST be True.
+    if not settings.PROD:
+        params.update({"samesite": "lax", "secure": False})
+    else:
+        params.update({"samesite": "none", "secure": True})
+    return params
+
 
 @router.post("/register", response_model=StandardResponse[UserResponse], status_code=201)
 async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
@@ -130,7 +152,7 @@ async def resend_otp(payload: ResendOTPRequest, db: AsyncSession = Depends(get_d
     )
 
 @router.post("/login", response_model=StandardResponse[Token])
-async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
+async def login(user_in: UserLogin, response:Response, db: AsyncSession = Depends(get_db)):
     """
     Authenticates user and issues 24h Access + 7d Refresh tokens.
     """
@@ -150,6 +172,25 @@ async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
 
     access_token = create_access_token(user.id, user.role)
     refresh_token = create_refresh_token(user.id)
+    cookie_params = get_safe_cookie_params()
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        **cookie_params
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_HOURS * 3600,
+        **cookie_params
+    )
+
+    logger.info(f"User {email_lower} logged in successfully. Access token and refresh token set in cookies.")
+
+    json_access_token = access_token if settings.INCLUDE_TOKENS_IN_JSON else None
+    json_refresh_token = refresh_token if settings.INCLUDE_TOKENS_IN_JSON else None
     
     db_refresh = RefreshToken(
         user_id=user.id,
@@ -162,10 +203,9 @@ async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
     return StandardResponse(
         message="Login successful",
         data=Token(
-            access_token=access_token,
-            refresh_token=refresh_token,
+            access_token=json_access_token,
+            refresh_token=json_refresh_token,
             token_type="bearer",
-            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             role=user.role,
             user_id=user.id
         )
@@ -203,8 +243,13 @@ async def logout(token_data: TokenRefreshRequest, db: AsyncSession = Depends(get
         raise HTTPException(status_code=401, detail="Invalid token")
     
 
+
 @router.post("/refresh", response_model=StandardResponse[AccessTokenResponse], status_code=200)
-async def refresh_token(token_data: TokenRefreshRequest, db: AsyncSession = Depends(get_db)):
+async def refresh_token(
+    response: Response, 
+    token_data: TokenRefreshRequest, 
+    db: AsyncSession = Depends(get_db)
+):
     """
     Exchange a valid refresh token for a new access token without re-authentication.
     Implements token rotation - invalidates old refresh token and issues a new one.
@@ -216,7 +261,6 @@ async def refresh_token(token_data: TokenRefreshRequest, db: AsyncSession = Depe
             algorithms=[settings.ALGORITHM]
         )
         user_id = payload.get("sub")
-        jti = payload.get("jti")
         token_type = payload.get("type")
         
         if token_type != "refresh":
@@ -225,7 +269,6 @@ async def refresh_token(token_data: TokenRefreshRequest, db: AsyncSession = Depe
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        # Check if refresh token is revoked in DB
         result = await db.execute(
             select(RefreshToken).where(
                 RefreshToken.token == token_data.refresh_token,
@@ -234,45 +277,57 @@ async def refresh_token(token_data: TokenRefreshRequest, db: AsyncSession = Depe
         )
         db_token = result.scalars().first()
         
-        if not db_token or db_token.is_revoked:
+        if not db_token:
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
         
-        # Verify token hasn't expired
-        if db_token.expires_at < datetime.now(timezone.utc):
+        if db_token.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+            db_token.is_revoked = True
+            await db.commit()
             raise HTTPException(status_code=401, detail="Refresh token expired")
-        
-        # Get user to check they still exist
-        user = await db.get(User, user_id)
+
+        user = await db.get(User, db_token.user_id)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
-        # Revoke old refresh token (token rotation)
         db_token.is_revoked = True
         
-        # Create new tokens
         new_access_token = create_access_token(user.id, user.role)
         new_refresh_token = create_refresh_token(user.id)
-        
-        # Store new refresh token
+
+        cookie_params = get_safe_cookie_params()
+        response.set_cookie(
+            key="access_token",
+            value=new_access_token,
+            max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            **cookie_params
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh_token,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_HOURS * 3600,
+            **cookie_params
+        )
+
         new_db_token = RefreshToken(
             user_id=user.id,
             token=new_refresh_token,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            is_revoked=False
         )
         db.add(new_db_token)
         await db.commit()
-        
+
         return StandardResponse(
             message="Token refreshed successfully",
             data=AccessTokenResponse(
-                access_token=new_access_token,
+                access_token=new_access_token if settings.INCLUDE_TOKENS_IN_JSON else None,
                 token_type="bearer",
                 expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
             )
         )
-        
+  
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
 @router.post("/forgot-password", response_model=StandardResponse[None], status_code=200)

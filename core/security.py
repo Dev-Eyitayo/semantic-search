@@ -20,7 +20,7 @@ def create_access_token(subject: Union[str, Any], role: str) -> str:
 
 def create_refresh_token(subject: Union[str, Any]) -> str:
     """Generates a 7-day Refresh Token for rotation."""
-    expire = datetime.now(timezone.utc) + timedelta(days=7)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.REFRESH_TOKEN_EXPIRE_HOURS)
     to_encode = {
         "exp": expire, 
         "sub": str(subject), 

@@ -57,7 +57,7 @@ async def get_filter_metadata(db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("/", response_model=StandardResponse[PropertyListWithPagination], tags=["Properties"])
+@router.get("", response_model=StandardResponse[PropertyListWithPagination], tags=["Properties"])
 async def list_properties(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -166,7 +166,7 @@ async def get_property(
     )
 
 
-@router.post("/", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
+@router.post("", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
 async def create_property(
     property_data: PropertyCreate,
     db: AsyncSession = Depends(get_db),
