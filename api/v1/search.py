@@ -189,15 +189,20 @@ def extract_bedrooms_from_query(query: str) -> Optional[int]:
 def calculate_location_score_enhanced(
     query_mentioned_locations: list[str],
     filter_location: Optional[str],
-    actual_location: str
+    actual_location: str,
+    property_lat: Optional[float] = None,
+    property_lng: Optional[float] = None,
+    filter_lat: Optional[float] = None,
+    filter_lng: Optional[float] = None
 ) -> float:
     """
     Enhanced location scoring that considers:
     1. Explicit filter location (highest priority)
     2. Location mentions in semantic query text
-    3. Default score if no location mentioned
+    3. Geographic proximity (if coordinates available)
+    4. String matching as fallback
     """
-    # Explicit filter location has highest priority
+    # String matching: Explicit filter location has highest priority
     if filter_location and filter_location.lower() in actual_location.lower():
         return 0.95
     
@@ -206,6 +211,22 @@ def calculate_location_score_enhanced(
         for mentioned_loc in query_mentioned_locations:
             if mentioned_loc.lower() in actual_location.lower():
                 return 0.85  # High score for query-mentioned location
+    
+    # Geographic proximity scoring: If we have coordinates for both filter and property
+    if (filter_lat is not None and filter_lng is not None and 
+        property_lat is not None and property_lng is not None):
+        # Simple distance calculation (Haversine-like, simplified for small distances)
+        # In Nigeria, rough scale: 0.01 degrees ≈ 1 km
+        lat_diff = abs(filter_lat - property_lat)
+        lng_diff = abs(filter_lng - property_lng)
+        estimated_distance_km = ((lat_diff ** 2 + lng_diff ** 2) ** 0.5) * 111  # Rough km conversion
+        
+        if estimated_distance_km < 5:  # Within 5km
+            return 0.9
+        elif estimated_distance_km < 15:  # Within 15km
+            return 0.75
+        elif estimated_distance_km < 50:  # Within 50km
+            return 0.6
     
     # Partial matches get moderate score
     if filter_location and (filter_location.lower() in actual_location.lower() or 
@@ -414,11 +435,16 @@ async def semantic_search(
             request.filters.get('price_max') if request.filters else None,
             prop.price
         )
-        # Use enhanced location scoring with query-extracted locations
+        # Use enhanced location scoring with query-extracted locations and geo-coordinates
         location_score = calculate_location_score_enhanced(
             query_mentioned_locations=query_mentioned_locations,
             filter_location=request.filters.get('location') if request.filters else None,
-            actual_location=prop.location
+            actual_location=prop.location,
+            property_lat=prop.latitude,
+            property_lng=prop.longitude,
+            # Filter coordinates would come from geocoding the filter location if available
+            filter_lat=None,  # Could be enhanced with geocoding service
+            filter_lng=None
         )
         recency_score = calculate_recency_score(prop.created_at)
         
@@ -669,7 +695,8 @@ async def get_search_suggestions(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns query autocompletion suggestions based on popular past queries and locations.
+    Returns query autocompletion suggestions based on popular past queries.
+    Filters by queries that start with the input string (case-insensitive).
     """
     logger.info(f"Suggestions requested for: {q}")
     
@@ -687,38 +714,34 @@ async def get_search_suggestions(
     except Exception as e:
         logger.warning(f"Redis cache error: {e}")
     
-    # Get top queries from search logs
+    # Get popular queries that match the input from search logs
     result = await db.execute(
         select(SearchLog.query, func.count(SearchLog.id).label('frequency'))
-        .where(SearchLog.query.ilike(f"{q}%"))
+        .where(SearchLog.query.ilike(f"{q}%"))  # Match queries that START with input
         .group_by(SearchLog.query)
         .order_by(desc('frequency'))
         .limit(limit)
     )
     top_queries = result.all()
     
-    # Get popular locations matching the query
-    location_result = await db.execute(
-        select(Property.location)
-        .where(Property.location.ilike(f"%{q}%"))
-        .distinct()
-        .limit(limit - len(top_queries))
-    )
-    locations = location_result.scalars().all()
+    # Extract just the query strings
+    suggestions = [query for query, _ in top_queries]
     
-    # Combine suggestions
-    suggestions = [query for query, _ in top_queries] + locations
-    suggestions = suggestions[:limit]
-    
-    if not suggestions:
-        # Fallback to location suggestions
+    # If we don't have enough suggestions, get more by partial matching
+    if len(suggestions) < limit:
         result = await db.execute(
-            select(Property.location)
-            .distinct()
-            .order_by(Property.location)
-            .limit(limit)
+            select(SearchLog.query, func.count(SearchLog.id).label('frequency'))
+            .where(SearchLog.query.ilike(f"%{q}%"))  # Partial match
+            .group_by(SearchLog.query)
+            .order_by(desc('frequency'))
+            .limit(limit - len(suggestions))
         )
-        suggestions = result.scalars().all()
+        additional_queries = result.all()
+        suggestions.extend([query for query, _ in additional_queries if query not in suggestions])
+    
+    # If still no suggestions, return empty list (not fallback to locations)
+    if not suggestions:
+        logger.debug(f"No matching queries found for: {q}")
     
     # Cache for 1 hour
     try:
@@ -726,7 +749,7 @@ async def get_search_suggestions(
     except Exception as e:
         logger.warning(f"Failed to cache suggestions: {e}")
     
-    logger.success(f"Retrieved {len(suggestions)} suggestions")
+    logger.success(f"Retrieved {len(suggestions)} suggestions for: {q}")
     
     return StandardResponse(
         message="Suggestions retrieved successfully",
