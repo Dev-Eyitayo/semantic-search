@@ -3,14 +3,14 @@ Properties endpoint for managing real estate listings.
 Includes CRUD operations and property search functionality.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Form, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy import desc
 from datetime import datetime, timezone
 import uuid
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy import func, desc, or_
 from sqlalchemy.orm import selectinload, joinedload
@@ -26,6 +26,7 @@ from schemas.property import (
     PropertyCreate, PropertyUpdate, PropertyResponse, PropertyListWithPagination
 )
 from schemas.base import StandardResponse
+from services.cloudinary_service import CloudinaryService
 from loguru import logger
 
 router = APIRouter()
@@ -84,7 +85,7 @@ async def list_properties(
             )
         )
 
-    if status:
+    if status and status.lower() != "all":
         try:
             query = query.where(Property.status == PropertyStatus[status.upper()])
         except KeyError:
@@ -129,6 +130,8 @@ async def list_properties(
         )
     )
 
+
+
 @router.get("/{property_id}", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
 async def get_property(
     property_id: uuid.UUID,
@@ -166,40 +169,52 @@ async def get_property(
     )
 
 
+
 @router.post("", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
 async def create_property(
-    property_data: PropertyCreate,
+    property_data: PropertyCreate = Depends(PropertyCreate.as_form),
+    images: List[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Create a new property listing.
-    Only listers can create properties.
-    """
-    # Check authorization
     if current_user.role != UserRole.LISTER:
         raise HTTPException(
             status_code=403,
             detail="Only listers can create property listings"
         )
     
-    # Create property
+    if len(images) > 15:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 15 images allowed per listing"
+        )
+    
+    property_id = uuid.uuid4()
+    image_urls = []
+    
+    try:
+        for image_file in images:
+            if image_file and image_file.filename:
+                file_content = await image_file.read()
+                upload_result = CloudinaryService.upload_listing_image(
+                    file_content=file_content,
+                    filename=image_file.filename,
+                    listing_id=str(property_id)
+                )
+                image_urls.append(upload_result.get('secure_url'))
+    except Exception as e:
+        logger.error(f"Image upload failed: {str(e)}")
+        raise HTTPException(
+            status_code= 400,
+            detail=f"Image upload failed: {str(e)}"
+        )
+    
     new_property = Property(
-        id=uuid.uuid4(),
+        id=property_id,
         lister_id=current_user.id,
-        title=property_data.title,
-        description=property_data.description,
-        price=property_data.price,
-        price_type=property_data.price_type,
-        location=property_data.location,
-        latitude=property_data.latitude,
-        longitude=property_data.longitude,
-        bedrooms=property_data.bedrooms,
-        bathrooms=property_data.bathrooms,
-        property_type=property_data.property_type,
-        amenities=property_data.amenities or [],
-        images=property_data.images or [],
-        thumbnail=property_data.thumbnail,
+        **property_data.model_dump(exclude={"images"}),
+        images=image_urls,
+        thumbnail=image_urls[0] if image_urls else None,
         status=PropertyStatus.PENDING_REVIEW,
         created_at=datetime.now(timezone.utc)
     )
@@ -208,12 +223,12 @@ async def create_property(
     await db.commit()
     await db.refresh(new_property)
     
-    logger.info(f"Created property: {new_property.id} by lister {current_user.id}")
-    
     return StandardResponse(
-        message="Property created successfully",
+        message="Property listed successfully",
         data=new_property
     )
+
+
 
 
 @router.put("/{property_id}", response_model=StandardResponse[PropertyResponse], tags=["Properties"])
@@ -236,8 +251,7 @@ async def update_property(
     
     if not property_obj:
         raise HTTPException(status_code=404, detail="Property not found")
-    
-    # Check authorization
+
     if property_obj.lister_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=403,

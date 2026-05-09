@@ -82,38 +82,27 @@ class CloudinaryService:
             logger.error(f"Cloudinary upload failed for listing {listing_id}: {str(e)}")
             raise Exception(f"Cloudinary upload failed: {str(e)}")
     
+
     @staticmethod
-    def upload_avatar(file_content: bytes, user_id: str) -> dict:
+    def upload_avatar(file_content: bytes, filename: str, user_id: str) -> dict:
         """
         Upload a user avatar to Cloudinary with face detection and circular crop.
-        Organized in avatars/{user_id}/ folder for clean user-based organization.
-        
         Args:
             file_content: Image file content as bytes
+            filename: Original filename (added to match route call)
             user_id: UUID of the user
-            
-        Returns:
-            Dict with secure_url, public_id, width, height
         """
         try:
-            logger.info(f"Uploading avatar to avatars/{user_id}/ folder")
+            logger.info(f"Uploading avatar for user: {user_id}")
             
-            # Delete old avatar if exists
-            try:
-                old_public_id = f"avatars/{user_id}/avatar"
-                cloudinary.uploader.destroy(old_public_id)
-                logger.info(f"Old avatar deleted for user: {user_id}")
-            except Exception as e:
-                logger.warning(f"Could not delete old avatar for user {user_id}: {str(e)}")
+            # Folder structure: avatars/{user_id}/
+            folder = f"avatars/{user_id}"
             
-            # Upload with face detection transformation
-            folder = "avatars"
-            public_id = user_id  # Use user_id as the public_id for easy lookup
-            
+            # We use "avatar" as the public_id so each user only has one active avatar file
             result = cloudinary.uploader.upload(
                 file_content,
-                folder=f"{folder}/{user_id}",
-                public_id="avatar",  # Use consistent name within user folder
+                folder=folder,
+                public_id="avatar", 
                 resource_type="auto",
                 transformation=[
                     {
@@ -123,15 +112,13 @@ class CloudinaryService:
                         "height": 400,
                         "quality": "auto",
                         "radius": "max",
-                        "background": "auto"
+                        "fetch_format": "auto"
                     }
                 ],
-                overwrite=True,
-                quality="auto",
-                fetch_format="auto"
+                overwrite=True
             )
             
-            logger.success(f"Avatar uploaded successfully to avatars/{user_id}/ - Public ID: {result.get('public_id')}")
+            logger.success(f"Avatar updated for user {user_id}")
             
             return {
                 "secure_url": result.get("secure_url"),
@@ -145,6 +132,8 @@ class CloudinaryService:
             logger.error(f"Cloudinary avatar upload failed for user {user_id}: {str(e)}")
             raise Exception(f"Cloudinary upload failed: {str(e)}")
     
+
+
     @staticmethod
     def delete_image(public_id: str) -> bool:
         """

@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field, field_validator, ConfigDict
+from fastapi import Form
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
@@ -17,18 +18,43 @@ class PropertyCreate(BaseModel):
     bathrooms: int = Field(..., ge=0, le=20)
     property_type: PropertyType
     amenities: Optional[List[str]] = None
-    images: Optional[List[str]] = Field(None, max_length=15)
 
-    @field_validator("images")
     @classmethod
-    def validate_images(cls, v: List[str]) -> List[str]:
-        if v and len(v) > 15:
-            raise ValueError("Maximum 15 images allowed per listing")
-        if v:
-            for img in v:
-                if not img.startswith("https://res.cloudinary.com/"):
-                    raise ValueError("Images must be Cloudinary URLs")
-        return v
+    def as_form(
+        cls,
+        title: str = Form(...),
+        description: str = Form(...),
+        price: float = Form(...),
+        price_type: PriceType = Form(...),
+        location: str = Form(...),
+        bedrooms: int = Form(...),
+        bathrooms: int = Form(...),
+        property_type: PropertyType = Form(...),
+        latitude: Optional[float] = Form(None),
+        longitude: Optional[float] = Form(None),
+        amenities: Optional[str] = Form(None)
+    ):
+        # Handle the JSON parsing for amenities here
+        parsed_amenities = []
+        if amenities:
+            try:
+                parsed_amenities = json.loads(amenities)
+            except:
+                parsed_amenities = []
+
+        return cls(
+            title=title,
+            description=description,
+            price=price,
+            price_type=price_type,
+            location=location,
+            bedrooms=bedrooms,
+            bathrooms=bathrooms,
+            property_type=property_type,
+            latitude=latitude,
+            longitude=longitude,
+            amenities=parsed_amenities
+        )
 
 
 class PropertyUpdate(BaseModel):

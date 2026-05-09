@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     )
 
     PROD: bool = False
-    INCLUDE_TOKENS_IN_JSON: bool = False
+    INCLUDE_TOKENS_IN_JSON: bool = True
+    UNSPLASH_ACCESS_KEY: str
 
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
