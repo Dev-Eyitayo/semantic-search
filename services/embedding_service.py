@@ -7,11 +7,20 @@ Thread-safe and process-safe with caching support.
 import time
 import threading
 from typing import List, Union, Tuple, Dict, Optional
-from sentence_transformers import SentenceTransformer
 import numpy as np
 from loguru import logger
+import os
+
 
 # Model configuration
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+from sentence_transformers import SentenceTransformer
+
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Smaller, faster model (384 dims vs 768)
 EMBEDDING_DIMENSIONS = 384
 
@@ -23,7 +32,6 @@ _model_lock = threading.Lock()
 _embedding_cache: Dict[str, np.ndarray] = {}
 _cache_lock = threading.Lock()
 MAX_CACHE_SIZE = 10000
-
 
 def _clear_cache_if_needed() -> None:
     """Clear cache if it exceeds max size (FIFO, clears half)."""
