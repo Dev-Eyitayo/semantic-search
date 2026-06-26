@@ -1,8 +1,12 @@
 #!/bin/bash
+set -e
 
-# Start Celery Worker with ONLY 1 concurrency (saves RAM)
-# The worker will be the only one loading the heavy Reranker model
-uv run celery -A core.celery worker --loglevel=info --concurrency=1 &
-
-# Start FastAPI
-uv run fastapi run main.py --host 0.0.0.0 --port $PORT
+if [ "$PROCESS_TYPE" = "api" ]; then
+    uv run alembic upgrade head
+    uv run python -m scripts.seed_properties
+    exec uv run uvicorn main:app --host 0.0.0.0 --port 8000
+elif [ "$PROCESS_TYPE" = "worker" ]; then
+    exec uv run celery -A core.celery worker --loglevel=info --concurrency=1
+else
+    exec "$@"
+fi

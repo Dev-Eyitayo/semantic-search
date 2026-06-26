@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  sheltly-postgres-db:
+    image: pgvector/pgvector:pg17
+    container_name: sheltly_postgres
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - sheltly_postgres_data:/var/lib/postgresql/data
+    networks:
+      - sheltly_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sheltly-redis:
+    image: redis:7-alpine
+    container_name: sheltly_redis
+    restart: unless-stopped
+    networks:
+      - sheltly_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sheltly-api:
+    image: deveyitayo/sheltly-api:latest
+    container_name: sheltly_api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./logs:/app/logs
+    env_file: .env
+    environment:
+      - PROCESS_TYPE=api
+      - POSTGRES_HOST=sheltly-postgres-db
+    depends_on:
+      sheltly-postgres-db:
+        condition: service_healthy
+      sheltly-redis:
+        condition: service_healthy
+    networks:
+      - sheltly_network
+
+  sheltly-worker:
+    image: deveyitayo/sheltly-api:latest
+    container_name: sheltly_worker
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+    env_file: .env
+    environment:
+      - PROCESS_TYPE=worker
+      - POSTGRES_HOST=sheltly-postgres-db
+    depends_on:
+      sheltly-api:
+        condition: service_started
+    networks:
+      - sheltly_network
+
+networks:
+  sheltly_network:
+    driver: bridge
+
+volumes:
+  sheltly_postgres_data:

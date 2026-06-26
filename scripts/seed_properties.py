@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 
 from db.models.user import User
 from db.models.property import Property
@@ -15,9 +15,7 @@ from core.config import settings
 from core.security import get_password_hash
 from core.enums import UserRole, PropertyType, PriceType, PropertyStatus
 from services.embedding_service import generate_embeddings_batch
-from core.config import settings
 
-# --- CONFIGURATION ---
 UNSPLASH_ACCESS_KEY = settings.UNSPLASH_ACCESS_KEY
 DEFAULT_PASSWORD = "Pass12345@"
 
@@ -60,12 +58,6 @@ async def fetch_unsplash_images(query: str, count: int = 5):
             print(f"Unsplash API error: {e}")
     return [f"https://placehold.co/800x600?text={query.replace(' ', '+')}"]
 
-async def clear_existing_data(session: AsyncSession):
-    print("🗑️ Wiping existing properties and lister accounts...")
-    await session.execute(delete(Property))
-    await session.execute(delete(User).where(User.role == UserRole.LISTER))
-    await session.commit()
-
 async def create_seed_listers(session: AsyncSession) -> list[uuid.UUID]:
     print(f"👤 Creating lister accounts (Password: {DEFAULT_PASSWORD})...")
     lister_names = [
@@ -98,7 +90,6 @@ async def create_seed_listers(session: AsyncSession) -> list[uuid.UUID]:
 async def create_seed_properties(session: AsyncSession, lister_ids: list[uuid.UUID]):
     print("🏡 Generating 200 versatile properties...")
     
-    # Pre-fetch image pools to avoid rate limits/latency per item
     image_pools = {
         "student": await fetch_unsplash_images("dormitory room hostel", 30),
         "luxury": await fetch_unsplash_images("modern luxury mansion", 30),
@@ -134,7 +125,6 @@ async def create_seed_properties(session: AsyncSession, lister_ids: list[uuid.UU
         title_prefix = "Self-contained" if bedrooms == 0 else f"{bedrooms}-Bedroom"
         title = f"{title_prefix} {prop_type.value} in {loc['name']}"
         
-        # Select images from pool
         item_images = random.sample(img_pool, min(3, len(img_pool)))
         
         prop = Property(
@@ -183,11 +173,16 @@ async def main():
     
     async with async_session() as session:
         try:
-            await clear_existing_data(session)
+            check_query = await session.execute(select(func.count()).select_from(Property))
+            property_count = check_query.scalar()
+            
+            if property_count > 0:
+                print(f"✨ Database already contains {property_count} properties. Skipping seed stage.")
+                return
+                
             lister_ids = await create_seed_listers(session)
             await create_seed_properties(session, lister_ids)
-            print("\n✅ Database re-seeded with high-quality static images!")
-            print("   Password: Pass12345@")
+            print("\n✅ Database seeded successfully with initial data!")
         except Exception as e:
             print(f"❌ Error: {e}")
             await session.rollback()
