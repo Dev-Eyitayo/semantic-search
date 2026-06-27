@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PYTHONPATH=.
+
 if [ "$PROCESS_TYPE" = "api" ]; then
     uv run alembic upgrade head
     uv run python -m scripts.seed_properties
