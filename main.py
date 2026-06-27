@@ -140,6 +140,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 origins = [
     "http://localhost",
     "http://localhost:3000",
+    "https://sheltly.vercel.app"
 ]
 
 # Add CORS middleware
