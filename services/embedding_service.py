@@ -10,18 +10,36 @@ from typing import List, Union, Tuple, Dict, Optional
 import numpy as np
 from loguru import logger
 import os
+import httpx
+
+from core.config import settings
 
 
 # Model configuration
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+EMBEDDING_BACKEND = os.getenv(
+    "EMBEDDING_BACKEND",
+    getattr(settings, "EMBEDDING_BACKEND", "local")
+).lower()
+HF_API_TOKEN = (
+    os.getenv("HF_API_TOKEN")
+    or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    or getattr(settings, "HF_API_TOKEN", None)
+)
+HF_EMBEDDING_MODEL = os.getenv(
+    "HF_EMBEDDING_MODEL",
+    getattr(settings, "HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+)
+
+if EMBEDDING_BACKEND != "hf_inference_api":
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from sentence_transformers import SentenceTransformer
 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Smaller, faster model (384 dims vs 768)
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
 EMBEDDING_DIMENSIONS = 384
 
 # Global singleton instance with thread lock
@@ -44,30 +62,75 @@ def _clear_cache_if_needed() -> None:
             logger.warning(f"Embedding cache cleared (size exceeded {MAX_CACHE_SIZE})")
 
 
-def get_embedding_model(warmup: bool = False) -> SentenceTransformer:
+def _should_use_remote_embeddings() -> bool:
+    return EMBEDDING_BACKEND == "hf_inference_api" and bool(HF_API_TOKEN)
+
+
+def _generate_remote_embeddings(texts: List[str], normalize: bool = True) -> List[np.ndarray]:
+    if not HF_API_TOKEN:
+        raise RuntimeError("HF_API_TOKEN is not set for remote embedding inference")
+
+    headers = {
+        "Authorization": f"Bearer {HF_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {"inputs": texts}
+
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(
+                f"https://api-inference.huggingface.co/models/{HF_EMBEDDING_MODEL}",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"Hugging Face API returned {exc.response.status_code}: {exc.response.text}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Hugging Face API request failed: {exc}") from exc
+
+    data = response.json()
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(data["error"])
+
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected Hugging Face response format: {type(data).__name__}")
+
+    embeddings = []
+    for item in data:
+        if isinstance(item, list):
+            arr = np.array(item, dtype=np.float32)
+        elif isinstance(item, dict) and "embedding" in item:
+            arr = np.array(item["embedding"], dtype=np.float32)
+        else:
+            raise RuntimeError(f"Unexpected embedding payload entry: {item}")
+        if normalize:
+            arr = _normalize_l2(arr)
+        embeddings.append(arr)
+
+    return embeddings
+
+
+def get_embedding_model(warmup: bool = False) -> Optional[SentenceTransformer]:
     """
     Get or initialize the embedding model (singleton with thread-safety).
-    
-    Args:
-        warmup: If True, encodes a sample text to warm up the model
-        
-    Returns:
-        SentenceTransformer instance (all-MiniLM-L6-v2)
-        
-    Raises:
-        RuntimeError: If model fails to load
+    Bypasses local initialization if using a remote Inference API.
     """
     global _embedding_model
     
+    # Short circuit if using the online API
+    if _should_use_remote_embeddings():
+        logger.info(f"Using remote Hugging Face Inference API: {HF_EMBEDDING_MODEL}")
+        return None
+        
     if _embedding_model is not None:
         return _embedding_model
     
     with _model_lock:
-        # Double-check after acquiring lock
         if _embedding_model is not None:
             return _embedding_model
         
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
+        logger.info(f"Loading embedding model locally: {EMBEDDING_MODEL_NAME}")
         try:
             _embedding_model = SentenceTransformer(
                 EMBEDDING_MODEL_NAME,
@@ -78,7 +141,6 @@ def get_embedding_model(warmup: bool = False) -> SentenceTransformer:
                 f"({EMBEDDING_DIMENSIONS} dimensions)"
             )
             
-            # Warmup the model if requested
             if warmup:
                 logger.info("Warming up embedding model...")
                 _warmup_model(_embedding_model)
@@ -89,7 +151,8 @@ def get_embedding_model(warmup: bool = False) -> SentenceTransformer:
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             raise RuntimeError(f"Embedding model initialization failed: {e}")
-
+        
+        
 
 def _is_cuda_available() -> bool:
     """Check if CUDA is available."""
@@ -158,14 +221,17 @@ def generate_embedding(
     start_time = time.time()
     
     try:
-        model = get_embedding_model()
-        
-        # Generate embedding
-        embedding_array = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
-        
-        # L2 normalize if requested
-        if normalize:
-            embedding_array = _normalize_l2(embedding_array)
+        if _should_use_remote_embeddings():
+            embedding_array = _generate_remote_embeddings([text], normalize=normalize)[0]
+        else:
+            model = get_embedding_model()
+            
+            # Generate embedding
+            embedding_array = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
+            
+            # L2 normalize if requested
+            if normalize:
+                embedding_array = _normalize_l2(embedding_array)
         
         # Convert to list
         embedding = embedding_array.tolist()
@@ -244,19 +310,22 @@ def generate_embeddings_batch(
         
         # Encode texts not in cache
         if texts_to_encode:
-            model = get_embedding_model()
-            
-            # Batch encode
-            encoded_arrays = model.encode(
-                texts_to_encode,
-                batch_size=batch_size,
-                convert_to_numpy=True,
-                show_progress_bar=False
-            )
-            
-            # Normalize if requested
-            if normalize:
-                encoded_arrays = np.array([_normalize_l2(arr) for arr in encoded_arrays])
+            if _should_use_remote_embeddings():
+                encoded_arrays = _generate_remote_embeddings(texts_to_encode, normalize=normalize)
+            else:
+                model = get_embedding_model()
+                
+                # Batch encode
+                encoded_arrays = model.encode(
+                    texts_to_encode,
+                    batch_size=batch_size,
+                    convert_to_numpy=True,
+                    show_progress_bar=False
+                )
+                
+                # Normalize if requested
+                if normalize:
+                    encoded_arrays = np.array([_normalize_l2(arr) for arr in encoded_arrays])
             
             # Store in cache and result list
             for text, encoded_array in zip(texts_to_encode, encoded_arrays):

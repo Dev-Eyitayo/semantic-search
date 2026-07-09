@@ -3,11 +3,18 @@ import uuid
 import random
 import time as time_module
 import httpx
+import sys
+from pathlib import Path
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.future import select
 from sqlalchemy import delete, func
+
+repo_root = Path(__file__).resolve().parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 from db.models.user import User
 from db.models.property import Property
@@ -168,7 +175,22 @@ async def create_seed_properties(session: AsyncSession, lister_ids: list[uuid.UU
             print(f"Embedding error: {e}")
 
 async def main():
-    engine = create_async_engine(settings.DATABASE_ASYNC_URL, echo=False)
+    # Prepare asyncpg-friendly URL and connect_args (remove sslmode, set ssl via connect_args)
+    def _prepare_async_url_and_connect_args(url: str):
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        connect_args = {}
+        if "sslmode" in query:
+            connect_args["ssl"] = True
+            query.pop("sslmode", None)
+        if "channel_binding" in query:
+            query.pop("channel_binding", None)
+        clean_query = urlencode(query)
+        clean_url = urlunparse(parsed._replace(query=clean_query))
+        return clean_url, connect_args
+
+    clean_async_url, async_connect_args = _prepare_async_url_and_connect_args(settings.DATABASE_ASYNC_URL)
+    engine = create_async_engine(clean_async_url, echo=False, connect_args=async_connect_args if async_connect_args else None)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
     async with async_session() as session:
