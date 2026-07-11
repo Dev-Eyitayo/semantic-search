@@ -56,6 +56,8 @@ LOCATION_ALIASES = {
     "portharcourt": "port harcourt",
     "abj": "abuja",
     "gra ibadan": "bodija",
+    "leadcity": "lead city",
+    "leadcity": "leadcity University",
 }
 
 

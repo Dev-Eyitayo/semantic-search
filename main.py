@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.exceptions import RequestValidationError 
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
 from core.config import settings
+from core.ratelimit import limiter
 from api.v1 import auth, users, properties, media, search, ai, admin
 from fastapi.responses import JSONResponse
 from core.logger import setup_logging
@@ -23,10 +25,24 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description="Backend for AI Driven Semantic Search Property Platform",
-    docs_url="/", 
+    docs_url="/",
     redoc_url="/redoc",
     swagger_ui_init_oauth={},
 )
+
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "status": "error",
+            "message": f"Too many requests. Limit: {exc.detail}",
+            "data": None
+        }
+    )
 
 
 
@@ -78,9 +94,12 @@ async def startup_event():
     logger.info("🚀 Application startup: Checking AI Configuration...")
 
     try:
-        from services.embedding_service import get_embedding_model
-        _ = get_embedding_model(warmup=False) 
-        logger.success("✓ Embedding service initialized")
+        from services.embedding_service import get_embedding_model, _should_use_remote_embeddings
+        model = get_embedding_model(warmup=False)
+        if model is None and _should_use_remote_embeddings():
+            logger.info("✓ Embedding service configured for remote inference; reachability will be verified on demand")
+        else:
+            logger.success("✓ Embedding service initialized")
 
     except Exception as e:
         logger.warning(f"AI models will load on demand: {e}")

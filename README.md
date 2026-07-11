@@ -36,7 +36,7 @@ The project doubles as a comparison testbed: it exposes both a semantic search e
 - **Geospatial search** — exact haversine distance math, radius search (`GET /search/nearby` or `lat`/`lng`/`radius_km` filters on semantic search), distance-aware ranking, and a layered geocoder that resolves free-text areas ("lekki", "vi") via Redis cache → listing centroids → optional Nominatim.
 - **Keyword search baseline** — Postgres `tsvector` full-text search, used both as a fallback and as the control condition for the research comparison.
 - **Similar properties, suggestions, and search feedback** — content-based "more like this", autocomplete from popular past queries (Redis-cached), and a feedback endpoint that logs relevance judgments for offline evaluation.
-- **Full platform backend** — JWT auth with email verification (OTP), role-based permissions, property CRUD with an admin approval workflow, Cloudinary media uploads, Celery background tasks, and rate limiting.
+- **Full platform backend** — JWT auth with email verification (OTP), role-based permissions, property CRUD with an admin approval workflow, Cloudinary media uploads, background email delivery, and rate limiting.
 
 ## 🛠 Tech Stack
 
@@ -46,7 +46,7 @@ The project doubles as a comparison testbed: it exposes both a semantic search e
 | Database | PostgreSQL 17 (`pgvector/pgvector` image), SQLAlchemy 2.0 (asyncpg), Alembic migrations |
 | Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`), local inference or Hugging Face Inference API |
 | Explainability | SHAP feature attribution |
-| Caching / queue | Redis (embedding + suggestion cache, Celery broker), Celery worker |
+| Caching / background work | Redis (suggestion + geocode cache, OTPs, token blacklist, rate limits); emails and search logging via FastAPI BackgroundTasks — no worker process required |
 | Auth | JWT (python-jose), bcrypt, OTP email verification |
 | Media | Cloudinary |
 | Mail | fastapi-mail (MailHog in dev) |
@@ -134,12 +134,13 @@ uv run python -m scripts.create_admin
 
 # 7. Start the API (docs served at http://localhost:8000/)
 uv run fastapi dev main.py
-
-# 8. In another terminal, start the Celery worker
-uv run celery -A core.celery_app worker --loglevel=info -P solo
 ```
 
-Alternatively, run the whole stack (API + worker + Postgres + Redis + MailHog) with:
+Emails (OTP verification, password reset) are sent via FastAPI background tasks in the API
+process — no separate worker is needed, which keeps the app deployable on single-process
+free tiers (e.g. Render).
+
+Alternatively, run the whole stack (API + Postgres + Redis + MailHog) with:
 
 ```bash
 docker-compose up --build
@@ -180,7 +181,7 @@ Semantic search with query parsing, weighted ranking, and optional explanations.
         "id": "7f9b6c2e-...",
         "title": "Modern 2-Bedroom Apartment in Challenge",
         "price": 2200000,
-        "location": "Yaba, Lagos",
+        "location": "Challenge, Ibadan",
         "bedrooms": 2,
         "ranking_score": 0.87,
         "semantic_score": 0.81,

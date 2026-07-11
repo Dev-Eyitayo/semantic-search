@@ -1,6 +1,6 @@
 import secrets
 import re
-from fastapi import APIRouter, Depends, HTTPException, status,  Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, select, update
@@ -23,7 +23,8 @@ from services.redis_service import (
     store_otp, verify_otp_code, blacklist_token
 )
 from services.mail_service import send_verification_email, send_password_reset_otp
-from loguru import logger   
+from core.ratelimit import limiter
+from loguru import logger
 
 router = APIRouter()
 # cookie_params = {
@@ -50,9 +51,10 @@ def get_safe_cookie_params():
 
 
 @router.post("/register", response_model=StandardResponse[UserResponse], status_code=201)
-async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/hour")
+async def register(request: Request, user_in: UserCreate, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     """
-    Registers a new user and triggers a background OTP email via Celery.
+    Registers a new user and sends the OTP email as a background task.
     """
     email_lower = user_in.email.lower()
     logger.info(f"Attempting to register user with email: {email_lower}")
@@ -79,7 +81,7 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     await store_otp(email_lower, otp_code, expire_seconds=600)
     
     logger.success(f"User {email_lower} created successfully. Sending OTP.")
-    send_verification_email.delay(new_user.email, new_user.first_name, otp_code)
+    background_tasks.add_task(send_verification_email, new_user.email, new_user.first_name, otp_code)
     
     return StandardResponse(
         message="Registration successful. Please check your email for the OTP.",
@@ -94,7 +96,9 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/verify-email", response_model=StandardResponse[None])
+@limiter.limit("10/minute")
 async def verify_email(
+    request: Request,
     payload: VerifyEmailRequest,
     db: AsyncSession = Depends(get_db)
 ):
@@ -123,7 +127,8 @@ async def verify_email(
 
 
 @router.post("/resend-otp", response_model=StandardResponse[dict])
-async def resend_otp(payload: ResendOTPRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/minute")
+async def resend_otp(request: Request, payload: ResendOTPRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     """
     Resends the verification OTP if the user exists and is not verified.
     """
@@ -144,7 +149,7 @@ async def resend_otp(payload: ResendOTPRequest, db: AsyncSession = Depends(get_d
     await store_otp(email_lower, otp_code, expire_seconds=600)
     
     logger.info(f"Resending OTP to {email_lower}")
-    send_verification_email.delay(user.email, user.first_name, otp_code)
+    background_tasks.add_task(send_verification_email, user.email, user.first_name, otp_code)
     
     return StandardResponse(
         message="A new OTP has been sent to your email.",
@@ -152,7 +157,8 @@ async def resend_otp(payload: ResendOTPRequest, db: AsyncSession = Depends(get_d
     )
 
 @router.post("/login", response_model=StandardResponse[Token])
-async def login(user_in: UserLogin, response:Response, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, user_in: UserLogin, response: Response, db: AsyncSession = Depends(get_db)):
     """
     Authenticates user and issues 24h Access + 7d Refresh tokens.
     """
@@ -195,7 +201,7 @@ async def login(user_in: UserLogin, response:Response, db: AsyncSession = Depend
     db_refresh = RefreshToken(
         user_id=user.id,
         token=refresh_token,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.REFRESH_TOKEN_EXPIRE_HOURS)
     )
     db.add(db_refresh)
     await db.commit()
@@ -311,7 +317,7 @@ async def refresh_token(
         new_db_token = RefreshToken(
             user_id=user.id,
             token=new_refresh_token,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.REFRESH_TOKEN_EXPIRE_HOURS),
             is_revoked=False
         )
         db.add(new_db_token)
@@ -331,12 +337,13 @@ async def refresh_token(
 
 
 @router.post("/forgot-password", response_model=StandardResponse[None], status_code=200)
-async def forgot_password(request: PasswordResetRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(request: Request, payload: PasswordResetRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     """
     Send an OTP to the user's email for password reset.
     Always returns 200 to prevent email enumeration attacks.
     """
-    email_lower = request.email.lower()
+    email_lower = payload.email.lower()
     logger.info(f"Password reset requested for email: {email_lower}")
     
     result = await db.execute(
@@ -352,7 +359,7 @@ async def forgot_password(request: PasswordResetRequest, db: AsyncSession = Depe
         await store_otp(f"reset_otp:{email_lower}", otp_code, expire_seconds=900)
         
         logger.success(f"Password reset OTP generated for email: {email_lower}")
-        send_password_reset_otp.delay(user.email, user.first_name, otp_code)
+        background_tasks.add_task(send_password_reset_otp, user.email, user.first_name, otp_code)
     else:
         logger.warning(f"Password reset requested for non-existent email: {email_lower}")
     
@@ -363,7 +370,9 @@ async def forgot_password(request: PasswordResetRequest, db: AsyncSession = Depe
 
 
 @router.post("/reset-password", response_model=StandardResponse[None])
+@limiter.limit("10/minute")
 async def reset_password(
+    request: Request,
     payload: PasswordResetConfirm,
     db: AsyncSession = Depends(get_db)
 ):

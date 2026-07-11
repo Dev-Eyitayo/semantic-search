@@ -8,7 +8,7 @@ import time
 import re
 from typing import Optional, List
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_current_user_optional
 from db.session import get_db
 from db.models.user import User
 from db.models.property import Property
@@ -325,7 +325,7 @@ async def log_search_async(
 async def semantic_search(
     request: SemanticSearchRequest,
     background_tasks: BackgroundTasks,
-    current_user: Optional[User] = Depends(lambda: None),  # Optional auth
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -454,21 +454,27 @@ async def semantic_search(
     
     # Batch search returns top results efficiently
     batch_start = time.time()
-    batch_results = batch_similarity_search(
-        query=request.query,
-        candidates=candidates,
-        top_k=min(len(candidates), 100),  # Get top 100 results
-        normalize=True
-    )
-    batch_time_ms = int((time.time() - batch_start) * 1000)
-    
-    logger.debug(f"Batch similarity search: {len(batch_results)} results in {batch_time_ms}ms")
-    
+    try:
+        batch_results = batch_similarity_search(
+            query=request.query,
+            candidates=candidates,
+            top_k=min(len(candidates), 100),  # Get top 100 results
+            normalize=True
+        )
+        batch_time_ms = int((time.time() - batch_start) * 1000)
+        logger.debug(f"Batch similarity search: {len(batch_results)} results in {batch_time_ms}ms")
+    except Exception as exc:
+        batch_time_ms = int((time.time() - batch_start) * 1000)
+        logger.warning(f"Semantic embedding backend failed after {batch_time_ms}ms: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="Semantic search is temporarily unavailable while the embedding service is unreachable. Please try again shortly."
+        ) from exc
+
     # Calculate scores for each result from batch
     scored_properties = []
-    for idx, text, batch_semantic_score in batch_results:
+    for idx, _, batch_semantic_score in batch_results:
         prop = properties[idx]
-        
         semantic_score = batch_semantic_score
         price_score = calculate_price_score(
             request.filters.get('price_max') if request.filters else None,
@@ -488,47 +494,47 @@ async def semantic_search(
             distance_km=prop_distance_km
         )
         recency_score = calculate_recency_score(prop.created_at)
-        
+
         final_score = calculate_final_ranking_score(
             semantic_score, price_score, location_score, recency_score, weights
         )
-        
+
         # ATTRIBUTE MATCHING BONUSES: Boost score if property matches extracted attributes
         attribute_match_bonus = 0.0
         attribute_matches = []
-        
+
         # Bonus for property type match
         if extracted_property_type and str(prop.property_type.value).lower() == extracted_property_type.lower():
             attribute_match_bonus += 0.08
             attribute_matches.append(f"Type: {extracted_property_type}")
-        
+
         # Bonus for bedroom count match
         if extracted_bedrooms and prop.bedrooms == extracted_bedrooms:
             attribute_match_bonus += 0.05
             attribute_matches.append(f"Bedrooms: {extracted_bedrooms}")
-        
+
         # Bonus for amenities Match
         if extracted_amenities and prop.amenities:
-            matching_amenities = sum(1 for amenity in extracted_amenities 
+            matching_amenities = sum(1 for amenity in extracted_amenities
                                     if any(amenity.lower() in a.lower() for a in prop.amenities))
             if matching_amenities > 0:
                 amenity_bonus = min(0.08, matching_amenities * 0.04)  # Up to 8% for all amenities
                 attribute_match_bonus += amenity_bonus
                 attribute_matches.append(f"Amenities: {matching_amenities} match")
-        
+
         # Apply bonus to final score (cap at 0.95 to preserve realism)
         final_score_boosted = min(0.95, final_score + attribute_match_bonus)
-        
+
         # Track attribute matches for explanations
         match_info = {
             'boost': attribute_match_bonus,
             'matches': attribute_matches
         }
-        
+
         # Generate explanations if requested
         explanations = None
         explanation_summary = None
-        
+
         if request.explain:
             explanations = [
                 ExplanationFeature(
@@ -560,14 +566,14 @@ async def semantic_search(
                     direction="positive" if recency_score > 0.7 else "neutral"
                 )
             ]
-            
+
             # Build explanation summary including attribute matches
             match_text = " + ".join(match_info['matches']) if match_info['matches'] else ""
             if match_text:
                 explanation_summary = f"Matches: {match_text}. Strongly relevant!" if final_score_boosted > 0.75 else f"Matches: {match_text}"
             else:
                 explanation_summary = "Strongly matches your search criteria" if final_score_boosted > 0.75 else "Moderately relevant to your search"
-        
+
         scored_properties.append({
             'property': prop,
             'semantic_score': semantic_score,
@@ -579,6 +585,65 @@ async def semantic_search(
             'explanations': explanations,
             'explanation_summary': explanation_summary
         })
+
+    # Sort by relevance before pagination
+    scored_properties.sort(key=lambda item: item['final_score'], reverse=True)
+    
+    # Batch results already sorted by relevance - no need to sort again!
+    total_results = len(scored_properties)
+    offset = (request.page - 1) * request.limit
+    paginated = scored_properties[offset:offset + request.limit]
+    
+    # Build response
+    results = []
+    for item in paginated:
+        prop = item['property']
+        results.append(SearchResult(
+            id=prop.id,
+            title=prop.title,
+            price=prop.price,
+            price_type=prop.price_type,
+            location=prop.location,
+            bedrooms=prop.bedrooms,
+            bathrooms=prop.bathrooms,
+            thumbnail=prop.thumbnail,
+            ranking_score=item['final_score'],
+            semantic_score=item['semantic_score'],
+            price_score=item['price_score'],
+            location_score=item['location_score'],
+            recency_score=item['recency_score'],
+            distance_km=item['distance_km'],
+            explanations=item['explanations'],
+            explanation_summary=item['explanation_summary']
+        ))
+    
+    processing_time_ms = int((time.time() - query_start) * 1000)
+    
+    # Log search asynchronously
+    background_tasks.add_task(
+        log_search_async,
+        db,
+        current_user.id if current_user else None,
+        request.query,
+        request.filters,
+        total_results,
+        "semantic",
+        processing_time_ms
+    )
+    
+    logger.success(f"Semantic search completed - Results: {len(results)}, Time: {processing_time_ms}ms")
+    
+    return StandardResponse(
+        message="Search results retrieved successfully",
+        data=SemanticSearchResponse(
+            query=request.query,
+            total_results=total_results,
+            page=request.page,
+            limit=request.limit,
+            processing_time_ms=processing_time_ms,
+            results=results
+        )
+    )
     
     # Batch results already sorted by relevance - no need to sort again!
     total_results = len(scored_properties)
@@ -646,7 +711,7 @@ async def keyword_search(
     bedrooms: Optional[int] = Query(None),
     price_max: Optional[float] = Query(None, ge=0),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    current_user: Optional[User] = Depends(lambda: None),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -744,7 +809,7 @@ async def nearby_search(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    current_user: Optional[User] = Depends(lambda: None),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1015,7 +1080,7 @@ async def get_similar_properties(
 @router.post("/feedback", response_model=StandardResponse[SearchFeedbackResponse], status_code=201, tags=["Search"])
 async def log_search_feedback(
     feedback: SearchFeedbackRequest,
-    current_user: Optional[User] = Depends(lambda: None),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """

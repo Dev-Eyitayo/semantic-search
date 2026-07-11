@@ -4,11 +4,16 @@ Refactored to use optimized embedding_service with batch processing support.
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Union, Optional
-from sentence_transformers import CrossEncoder
-from shap import KernelExplainer
+from typing import List, Dict, Tuple, Union, Optional, TYPE_CHECKING
 from loguru import logger
 import time
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
+
+# NOTE: sentence_transformers (torch) and shap (sklearn/pandas) are imported
+# lazily inside the functions that need them, so the app boots without
+# loading either on memory-constrained deployments.
 
 from services.embedding_service import (
     generate_embedding,
@@ -23,16 +28,19 @@ from services.embedding_service import (
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # Global reranker instance (lazy loaded)
-_reranker_model: Optional[CrossEncoder] = None
+_reranker_model: Optional["CrossEncoder"] = None
 
 
-def get_reranker_model() -> CrossEncoder:
+def get_reranker_model() -> "CrossEncoder":
     """
     Get or initialize the cross-encoder reranker model (lazy loading).
     Model is loaded once and reused for all requests.
     """
     global _reranker_model
     if _reranker_model is None:
+        # Deferred heavy import: pulls in torch
+        from sentence_transformers import CrossEncoder
+
         logger.info(f"Loading reranker model: {RERANKER_MODEL_NAME}")
         try:
             _reranker_model = CrossEncoder(RERANKER_MODEL_NAME)
@@ -223,8 +231,11 @@ def compute_shap_explanation(
         Dictionary of feature names to Shapley values
     """
     start_time = time.time()
-    
+
     try:
+        # Deferred heavy import: shap pulls in sklearn/pandas
+        from shap import KernelExplainer
+
         # Define prediction function for SHAP
         def predict_relevance(feature_array):
             """

@@ -1,9 +1,7 @@
 import os
-import asyncio
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from loguru import logger
 from core.config import settings
-from core.celery_app import celery_app
 
 # Define the connection config
 if settings.PROD:
@@ -35,13 +33,14 @@ else:
     
 
 
-@celery_app.task(name="send_verification_email")
-def send_verification_email(email_to: str, first_name: str, otp: str):
+async def send_verification_email(email_to: str, first_name: str, otp: str):
     """
-    Background task to send OTP verification email using fastapi-mail
+    Send the OTP verification email. Run via FastAPI BackgroundTasks so the
+    response is never blocked on SMTP; delivery failure is recoverable through
+    the /resend-otp endpoint.
     """
     logger.info(f"Email verification task started - Recipient: {email_to}, Name: {first_name}")
-    
+
     try:
         message = MessageSchema(
             subject="Sheltly verification code",
@@ -51,17 +50,14 @@ def send_verification_email(email_to: str, first_name: str, otp: str):
         )
 
         fm = FastMail(conf)
-        
-        # Since Celery is sync, we run the async send_message in a loop
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(fm.send_message(message, template_name="email_verification.html"))
-        
+        await fm.send_message(message, template_name="email_verification.html")
+
         logger.success(f"Email verification sent successfully - Recipient: {email_to}")
         return {"status": "success", "recipient": email_to}
-    
+
     except Exception as e:
         logger.error(f"Failed to send verification email to {email_to}: {str(e)}")
-        raise
+        # Don't raise - the user can request a new OTP via /resend-otp
 
 
 async def send_rejection_email(recipient_email: str, subject: str, message: str):
@@ -90,13 +86,13 @@ async def send_rejection_email(recipient_email: str, subject: str, message: str)
         # Don't raise, just log - email delivery shouldn't fail the main operation
 
 
-@celery_app.task(name="send_password_reset_otp")
-def send_password_reset_otp(email_to: str, first_name: str, otp: str):
+async def send_password_reset_otp(email_to: str, first_name: str, otp: str):
     """
-    Background task to send password reset OTP email via fastapi-mail
+    Send the password reset OTP email. Run via FastAPI BackgroundTasks;
+    delivery failure is recoverable by re-requesting /forgot-password.
     """
     logger.info(f"Password reset email task started - Recipient: {email_to}, Name: {first_name}")
-    
+
     try:
         message = MessageSchema(
             subject="Reset your Sheltly password",
@@ -106,16 +102,14 @@ def send_password_reset_otp(email_to: str, first_name: str, otp: str):
         )
 
         fm = FastMail(conf)
-        
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(fm.send_message(message, template_name="email_password_reset.html"))
-        
+        await fm.send_message(message, template_name="email_password_reset.html")
+
         logger.success(f"Password reset email sent successfully - Recipient: {email_to}")
         return {"status": "success", "recipient": email_to}
-    
+
     except Exception as e:
         logger.error(f"Failed to send password reset email to {email_to}: {str(e)}")
-        raise
+        # Don't raise - the user can re-request via /forgot-password
 
 
 async def send_listing_approved_email(

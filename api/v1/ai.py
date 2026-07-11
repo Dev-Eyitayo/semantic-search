@@ -8,7 +8,7 @@ import time
 import json
 from typing import Optional, List
 
-from api.deps import get_current_user, RoleChecker
+from api.deps import get_current_user, get_current_user_optional, RoleChecker
 from db.session import get_db
 from db.models.user import User
 from db.models.property import Property
@@ -30,6 +30,7 @@ from services.ai_service import (
     get_feature_human_labels,
     rerank_results
 )
+from services.embedding_service import EMBEDDING_MODEL_NAME
 
 router = APIRouter()
 
@@ -122,7 +123,7 @@ async def get_detailed_explanation(
     query: str = Query(..., min_length=3, max_length=500),
     listing_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(lambda: None)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
     Get full RankSHAP feature attribution breakdown for a listing given a query.
@@ -340,10 +341,9 @@ async def reindex_property_embedding(
         # Log audit entry
         audit_log = AdminAuditLog(
             action="REINDEX_PROPERTY",
-            user_id=admin_user.id,
-            target_id=property_id,
-            details={"embedding_model": "all-mpnet-base-v2", "text_length": len(text)},
-            timestamp=func.now()
+            admin_id=admin_user.id,
+            listing_id=property_id,
+            details={"embedding_model": EMBEDDING_MODEL_NAME, "text_length": len(text)}
         )
         db.add(audit_log)
         
@@ -489,17 +489,19 @@ async def audit_explanation(
         property_text = f"{listing.title}. {listing.description}"
         feature_scores = await get_property_feature_scores(query, listing, db)
         
-        # Compute real SHAP explanation
-        shap_result = await compute_shap_explanation(
+        # Compute real SHAP explanation (returns {feature_name: shapley_value})
+        shap_result = compute_shap_explanation(
             query=query,
-            property_data=listing,
+            property_data={
+                "title": listing.title,
+                "location": listing.location
+            },
             feature_values=feature_scores
         )
-        
-        # Extract Shapley values from result
+
         shap_values = {
             feature: float(value)
-            for feature, value in shap_result.get("feature_contributions", {}).items()
+            for feature, value in shap_result.items()
         }
         
         # Detect bias flags
@@ -514,16 +516,15 @@ async def audit_explanation(
         # Log audit action with comprehensive details
         audit_log = AdminAuditLog(
             action="AUDIT_QUERY",
-            user_id=admin_user.id,
-            target_id=listing_id,
+            admin_id=admin_user.id,
+            listing_id=listing_id,
+            query=query,
             details={
-                "query": query,
                 "shap_values": shap_values,
-                "bias_flags": bias_flags,
                 "property_text_length": len(property_text),
                 "feature_count": len(shap_values)
             },
-            timestamp=func.now()
+            bias_flags=bias_flags
         )
         db.add(audit_log)
         await db.commit()

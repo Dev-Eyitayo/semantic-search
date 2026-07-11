@@ -1,0 +1,32 @@
+name: ping
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Sleep a random 0-180s so pings land at irregular times
+        run: |
+          JITTER=$(( RANDOM % 181 ))
+          echo "Sleeping ${JITTER}s before ping"
+          sleep "${JITTER}"
+
+      - name: Ping health endpoint
+        env:
+          APP_URL: ${{ vars.RENDER_APP_URL }}
+        run: |
+          if [ -z "${APP_URL}" ]; then
+            echo "::error::Repository variable RENDER_APP_URL is not set"
+            exit 1
+          fi
+          curl -fsS --max-time 30 --retry 3 --retry-delay 10 \
+            "${APP_URL%/}/health"
+          echo
+          echo "Ping OK at $(date -u +%FT%TZ)"

@@ -6,13 +6,16 @@ Thread-safe and process-safe with caching support.
 
 import time
 import threading
-from typing import List, Union, Tuple, Dict, Optional
+from typing import List, Union, Tuple, Dict, Optional, TYPE_CHECKING
 import numpy as np
 from loguru import logger
 import os
 import httpx
 
 from core.config import settings
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 
 # Model configuration
@@ -30,6 +33,10 @@ HF_EMBEDDING_MODEL = os.getenv(
     "HF_EMBEDDING_MODEL",
     getattr(settings, "HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 )
+HF_INFERENCE_BASE_URL = os.getenv(
+    "HF_INFERENCE_BASE_URL",
+    getattr(settings, "HF_INFERENCE_BASE_URL", "https://router.huggingface.co/hf-inference/models")
+).rstrip("/")
 
 if EMBEDDING_BACKEND != "hf_inference_api":
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -37,13 +44,15 @@ if EMBEDDING_BACKEND != "hf_inference_api":
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from sentence_transformers import SentenceTransformer
+# NOTE: sentence_transformers (and with it torch, ~200MB+ RSS) is imported
+# lazily inside get_embedding_model() so remote-backend deployments on small
+# instances never pay the torch memory cost.
 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIMENSIONS = 384
 
 # Global singleton instance with thread lock
-_embedding_model: Optional[SentenceTransformer] = None
+_embedding_model: Optional["SentenceTransformer"] = None
 _model_lock = threading.Lock()
 
 # Simple in-memory cache for embeddings (max 10k entries)
@@ -76,10 +85,12 @@ def _generate_remote_embeddings(texts: List[str], normalize: bool = True) -> Lis
     }
     payload = {"inputs": texts}
 
+    inference_url = f"{HF_INFERENCE_BASE_URL}/{HF_EMBEDDING_MODEL}/pipeline/feature-extraction"
+
     try:
         with httpx.Client(timeout=120.0) as client:
             response = client.post(
-                f"https://api-inference.huggingface.co/models/{HF_EMBEDDING_MODEL}",
+                inference_url,
                 headers=headers,
                 json=payload,
             )
@@ -111,25 +122,28 @@ def _generate_remote_embeddings(texts: List[str], normalize: bool = True) -> Lis
     return embeddings
 
 
-def get_embedding_model(warmup: bool = False) -> Optional[SentenceTransformer]:
+def get_embedding_model(warmup: bool = False) -> Optional["SentenceTransformer"]:
     """
     Get or initialize the embedding model (singleton with thread-safety).
     Bypasses local initialization if using a remote Inference API.
     """
     global _embedding_model
-    
+
     # Short circuit if using the online API
     if _should_use_remote_embeddings():
         logger.info(f"Using remote Hugging Face Inference API: {HF_EMBEDDING_MODEL}")
         return None
-        
+
     if _embedding_model is not None:
         return _embedding_model
-    
+
     with _model_lock:
         if _embedding_model is not None:
             return _embedding_model
-        
+
+        # Deferred heavy import: pulls in torch, only needed for local inference
+        from sentence_transformers import SentenceTransformer
+
         logger.info(f"Loading embedding model locally: {EMBEDDING_MODEL_NAME}")
         try:
             _embedding_model = SentenceTransformer(
@@ -163,7 +177,7 @@ def _is_cuda_available() -> bool:
         return False
 
 
-def _warmup_model(model: SentenceTransformer, num_samples: int = 3) -> None:
+def _warmup_model(model: "SentenceTransformer", num_samples: int = 3) -> None:
     """
     Warm up the embedding model by encoding sample texts.
     
@@ -287,12 +301,14 @@ def generate_embeddings_batch(
         raise ValueError("All texts are empty")
     
     start_time = time.time()
-    embeddings_list: List[np.ndarray] = []
+    # Results are written back by input position so a batch mixing cache hits
+    # and misses keeps embeddings aligned with their texts
+    embeddings_by_index: List[Optional[np.ndarray]] = [None] * len(valid_texts)
     cache_hits = 0
     cache_misses = 0
     texts_to_encode = []
     texts_to_encode_indices = []
-    
+
     try:
         # Check cache for each text
         for idx, text in enumerate(valid_texts):
@@ -300,21 +316,21 @@ def generate_embeddings_batch(
                 cache_key = _get_cache_key(text)
                 with _cache_lock:
                     if cache_key in _embedding_cache:
-                        embeddings_list.append(_embedding_cache[cache_key])
+                        embeddings_by_index[idx] = _embedding_cache[cache_key]
                         cache_hits += 1
                         continue
-            
+
             texts_to_encode.append(text)
             texts_to_encode_indices.append(idx)
             cache_misses += 1
-        
+
         # Encode texts not in cache
         if texts_to_encode:
             if _should_use_remote_embeddings():
                 encoded_arrays = _generate_remote_embeddings(texts_to_encode, normalize=normalize)
             else:
                 model = get_embedding_model()
-                
+
                 # Batch encode
                 encoded_arrays = model.encode(
                     texts_to_encode,
@@ -322,19 +338,19 @@ def generate_embeddings_batch(
                     convert_to_numpy=True,
                     show_progress_bar=False
                 )
-                
+
                 # Normalize if requested
                 if normalize:
                     encoded_arrays = np.array([_normalize_l2(arr) for arr in encoded_arrays])
-            
-            # Store in cache and result list
-            for text, encoded_array in zip(texts_to_encode, encoded_arrays):
+
+            # Store in cache and write back at each text's original position
+            for idx, text, encoded_array in zip(texts_to_encode_indices, texts_to_encode, encoded_arrays):
                 if use_cache:
                     _cache_embedding(text, encoded_array)
-                embeddings_list.append(encoded_array)
-        
-        # Convert to list format and maintain original order
-        embeddings = [arr.tolist() for arr in embeddings_list]
+                embeddings_by_index[idx] = encoded_array
+
+        # Convert to list format (order matches valid_texts)
+        embeddings = [arr.tolist() for arr in embeddings_by_index]
         
         processing_time_ms = int((time.time() - start_time) * 1000)
         

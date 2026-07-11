@@ -11,5 +11,7 @@ redis_url = settings.REDIS_URL
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=redis_url,
-    strategy="fixed-window"
+    strategy="fixed-window",
+    # Fail open if Redis is unavailable: an outage must not lock users out
+    swallow_errors=True
 )

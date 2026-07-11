@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
-    REFRESH_TOKEN_EXPIRE_HOURS: int = 24
+    REFRESH_TOKEN_EXPIRE_HOURS: int = 168  # 7 days; also drives the refresh_tokens DB row expiry
 
 
     PROJECT_NAME: str = "Sheltly"
@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     EMBEDDING_BACKEND: str = "local"
     HF_API_TOKEN: Optional[str] = None
     HF_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    HF_INFERENCE_BASE_URL: str = "https://router.huggingface.co/hf-inference/models"
 
     # Geocoding: 'nominatim' enables the OpenStreetMap fallback for location
     # strings not resolvable from our own listings; 'none' disables it.

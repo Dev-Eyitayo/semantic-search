@@ -253,3 +253,24 @@ class TestSemanticSearchGeoFilters:
         data = response.json()["data"]
         assert data["total_results"] == 0
         assert data["results"] == []
+
+    def test_semantic_search_returns_clean_503_when_embedding_backend_fails(self, app, monkeypatch):
+        def fail_similarity(query, candidates, top_k=None, normalize=True):
+            raise RuntimeError("embedding backend unavailable")
+
+        monkeypatch.setattr(search_module, "batch_similarity_search", fail_similarity)
+        client = client_with_db(app, [
+            FakeResult(row=(YABA[0], YABA[1], 1)),
+            FakeResult(items=[]),
+            FakeResult(items=[make_property("Luxury apartment", "Yaba, Lagos", *YABA)]),
+        ])
+
+        response = client.post(
+            "/api/v1/search/semantic",
+            json={"query": "apartment in yaba", "filters": {"location": "yaba"}},
+        )
+
+        assert response.status_code == 503
+        # The test app has no custom exception handlers, so the body uses
+        # FastAPI's default 'detail' key (main.py rewraps this as 'message')
+        assert "temporarily unavailable" in response.json()["detail"].lower()
