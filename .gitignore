@@ -12,9 +12,6 @@ wheels/
 .env.prod
 
 start_dev.ps1
-PERMISSIONS_GUIDE.md
-RBAC_IMPLEMENTATION_NOTES.md
-SETUP_GUIDE.md
 
 
 logs/

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Boolean, DateTime, Enum, ForeignKey, Text, Integer, Float, JSON
+from sqlalchemy import String, Boolean, DateTime, Enum, ForeignKey, Text, Integer, Float, JSON, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
@@ -20,6 +20,10 @@ class SavedSearch(Base):
 
 class Property(Base):
     __tablename__ = "properties"
+    __table_args__ = (
+        # Serves the bounding-box prefilter used by radius search
+        Index("ix_properties_latitude_longitude", "latitude", "longitude"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     lister: Mapped["User"] = relationship("User", back_populates="properties")

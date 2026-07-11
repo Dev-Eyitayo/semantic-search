@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     HF_API_TOKEN: Optional[str] = None
     HF_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
+    # Geocoding: 'nominatim' enables the OpenStreetMap fallback for location
+    # strings not resolvable from our own listings; 'none' disables it.
+    GEOCODER_PROVIDER: str = "nominatim"
+    NOMINATIM_BASE_URL: str = "https://nominatim.openstreetmap.org"
+    GEOCODER_COUNTRY_CODES: str = "ng"
+    GEOCODE_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
+
     def _build_database_url(self, driver: str) -> str:
         if not all([self.POSTGRES_USER, self.POSTGRES_PASSWORD, self.POSTGRES_DB, self.POSTGRES_HOST]):
             raise ValueError("POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, and POSTGRES_HOST must be set when DATABASE_* URLs are not provided")

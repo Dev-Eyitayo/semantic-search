@@ -29,6 +29,7 @@ class SearchResult(BaseModel):
     price_score: float = Field(..., ge=0.0, le=1.0)
     location_score: float = Field(..., ge=0.0, le=1.0)
     recency_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    distance_km: Optional[float] = Field(None, ge=0.0, description="Distance from the search location, when one was resolved")
     explanations: Optional[List[ExplanationFeature]] = None
     explanation_summary: Optional[str] = None
 
@@ -89,6 +90,33 @@ class SimilarPropertiesResponse(BaseModel):
     """Similar properties response"""
     source_property_id: UUID
     similar_properties: List[SimilarProperty]
+
+
+class NearbyProperty(BaseModel):
+    """Property in radius/proximity search results"""
+    id: UUID
+    title: str
+    price: float
+    price_type: str
+    location: str
+    bedrooms: int
+    bathrooms: int
+    thumbnail: Optional[str] = None
+    distance_km: float = Field(..., ge=0.0)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NearbySearchResponse(BaseModel):
+    """Radius/proximity search response"""
+    center_lat: float
+    center_lng: float
+    radius_km: float
+    resolved_from: Optional[str] = Field(None, description="Location string the center was geocoded from, if any")
+    total_results: int
+    page: int
+    limit: int
+    results: List[NearbyProperty]
 
 
 class SearchFeedbackRequest(BaseModel):

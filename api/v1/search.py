@@ -17,11 +17,16 @@ from core.enums import PropertyStatus
 from schemas.search import (
     SemanticSearchRequest, SemanticSearchResponse, SearchResult,
     KeywordSearchResponse, SuggestionsResponse, SimilarPropertiesResponse,
-    SearchFeedbackRequest, SearchFeedbackResponse, ExplanationFeature
+    SearchFeedbackRequest, SearchFeedbackResponse, ExplanationFeature,
+    NearbyProperty, NearbySearchResponse
 )
 from schemas.base import StandardResponse
 from services.redis_service import redis_client
 from services.embedding_service import batch_similarity_search
+from services.geo_service import (
+    haversine_km, bounding_box, distance_score,
+    parse_geo_filters, resolve_location
+)
 from loguru import logger
 import json
 
@@ -190,49 +195,35 @@ def calculate_location_score_enhanced(
     query_mentioned_locations: list[str],
     filter_location: Optional[str],
     actual_location: str,
-    property_lat: Optional[float] = None,
-    property_lng: Optional[float] = None,
-    filter_lat: Optional[float] = None,
-    filter_lng: Optional[float] = None
+    distance_km: Optional[float] = None
 ) -> float:
     """
     Enhanced location scoring that considers:
     1. Explicit filter location (highest priority)
     2. Location mentions in semantic query text
-    3. Geographic proximity (if coordinates available)
+    3. Geographic proximity via exact haversine distance (when resolved)
     4. String matching as fallback
     """
     # String matching: Explicit filter location has highest priority
     if filter_location and filter_location.lower() in actual_location.lower():
         return 0.95
-    
+
     # Check if any query-mentioned locations match
     if query_mentioned_locations:
         for mentioned_loc in query_mentioned_locations:
             if mentioned_loc.lower() in actual_location.lower():
                 return 0.85  # High score for query-mentioned location
-    
-    # Geographic proximity scoring: If we have coordinates for both filter and property
-    if (filter_lat is not None and filter_lng is not None and 
-        property_lat is not None and property_lng is not None):
-        # Simple distance calculation (Haversine-like, simplified for small distances)
-        # In Nigeria, rough scale: 0.01 degrees ≈ 1 km
-        lat_diff = abs(filter_lat - property_lat)
-        lng_diff = abs(filter_lng - property_lng)
-        estimated_distance_km = ((lat_diff ** 2 + lng_diff ** 2) ** 0.5) * 111  # Rough km conversion
-        
-        if estimated_distance_km < 5:  # Within 5km
-            return 0.9
-        elif estimated_distance_km < 15:  # Within 15km
-            return 0.75
-        elif estimated_distance_km < 50:  # Within 50km
-            return 0.6
-    
+
+    # Geographic proximity: smooth decay over exact distance from the
+    # resolved search center (see services.geo_service.distance_score)
+    if distance_km is not None:
+        return distance_score(distance_km)
+
     # Partial matches get moderate score
-    if filter_location and (filter_location.lower() in actual_location.lower() or 
+    if filter_location and (filter_location.lower() in actual_location.lower() or
                            actual_location.lower() in filter_location.lower()):
         return 0.7
-    
+
     # Default score when no location specified or no match
     return 0.5
 
@@ -387,7 +378,34 @@ async def semantic_search(
     if extracted_budget and not request.filters.get('price_max'):
         filters.append(Property.price <= extracted_budget)
         logger.debug(f"Applied extracted budget filter: ₦{extracted_budget:,.0f}")
-    
+
+    # GEO: resolve a search center from explicit coordinates or the filter location
+    geo_center = None
+    geo_radius_km = None
+    if request.filters:
+        try:
+            geo_center, geo_radius_km = parse_geo_filters(request.filters)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if geo_center is None and request.filters.get('location'):
+            resolved = await resolve_location(db, request.filters['location'])
+            if resolved:
+                geo_center = (resolved.lat, resolved.lng)
+                logger.debug(f"Geocoded filter location '{request.filters['location']}' via {resolved.source}")
+            elif geo_radius_km is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not resolve location '{request.filters['location']}' for radius search. Provide lat/lng instead."
+                )
+
+    # Radius filter: indexed bounding-box prefilter in SQL, exact haversine refinement after fetch
+    if geo_center and geo_radius_km:
+        lat_min, lat_max, lng_min, lng_max = bounding_box(geo_center[0], geo_center[1], geo_radius_km)
+        filters.append(Property.latitude.between(lat_min, lat_max))
+        filters.append(Property.longitude.between(lng_min, lng_max))
+        logger.debug(f"Applied radius filter: {geo_radius_km}km around ({geo_center[0]:.4f}, {geo_center[1]:.4f})")
+
     # Get dynamic ranking weights (adjusted based on query content)
     weights = await get_dynamic_weights(db, request.query)
     
@@ -396,17 +414,38 @@ async def semantic_search(
         select(Property).where(and_(*filters)).limit(1000)  # Batch processing limit
     )
     properties = result.scalars().all()
-    
+
+    # Exact radius refinement: the bounding box over-selects at its corners
+    if geo_center and geo_radius_km:
+        properties = [
+            p for p in properties
+            if p.latitude is not None and p.longitude is not None
+            and haversine_km(geo_center[0], geo_center[1], p.latitude, p.longitude) <= geo_radius_km
+        ]
+
     if not properties:
-        return SemanticSearchResponse(
-            results=[],
-            total=0,
-            processing_time_ms=int((time.time() - query_start) * 1000)
+        return StandardResponse(
+            message="Search results retrieved successfully",
+            data=SemanticSearchResponse(
+                query=request.query,
+                total_results=0,
+                page=request.page,
+                limit=request.limit,
+                processing_time_ms=int((time.time() - query_start) * 1000),
+                results=[]
+            )
         )
-    
+
     # Extract locations mentioned in the semantic query for enhanced scoring
     all_unique_locations = list(set(p.location for p in properties if p.location))
     query_mentioned_locations = extract_locations_from_query(request.query, all_unique_locations)
+
+    # No explicit geo center: resolve one from the query text for distance-aware ranking
+    if geo_center is None and query_mentioned_locations:
+        resolved = await resolve_location(db, query_mentioned_locations[0])
+        if resolved:
+            geo_center = (resolved.lat, resolved.lng)
+            logger.debug(f"Ranking distance center from query location '{query_mentioned_locations[0]}'")
     
     # Use BATCH similarity search for 10-50x performance improvement!
     candidates = [
@@ -435,16 +474,18 @@ async def semantic_search(
             request.filters.get('price_max') if request.filters else None,
             prop.price
         )
+        # Exact distance from the resolved search center, if we have one
+        prop_distance_km = None
+        if geo_center and prop.latitude is not None and prop.longitude is not None:
+            prop_distance_km = round(
+                haversine_km(geo_center[0], geo_center[1], prop.latitude, prop.longitude), 2
+            )
         # Use enhanced location scoring with query-extracted locations and geo-coordinates
         location_score = calculate_location_score_enhanced(
             query_mentioned_locations=query_mentioned_locations,
             filter_location=request.filters.get('location') if request.filters else None,
             actual_location=prop.location,
-            property_lat=prop.latitude,
-            property_lng=prop.longitude,
-            # Filter coordinates would come from geocoding the filter location if available
-            filter_lat=None,  # Could be enhanced with geocoding service
-            filter_lng=None
+            distance_km=prop_distance_km
         )
         recency_score = calculate_recency_score(prop.created_at)
         
@@ -504,7 +545,11 @@ async def semantic_search(
                 ),
                 ExplanationFeature(
                     feature="location_score",
-                    label="Located in your preferred area" if location_score > 0.9 else ("Partially matches your location" if location_score > 0.6 else "Different location"),
+                    label=(
+                        f"About {prop_distance_km} km from your search area" if prop_distance_km is not None and location_score <= 0.9
+                        else "Located in your preferred area" if location_score > 0.9
+                        else ("Partially matches your location" if location_score > 0.6 else "Different location")
+                    ),
                     weight=location_score,
                     direction="positive" if location_score > 0.5 else "neutral"
                 ),
@@ -529,6 +574,7 @@ async def semantic_search(
             'price_score': price_score,
             'location_score': location_score,
             'recency_score': recency_score,
+            'distance_km': prop_distance_km,
             'final_score': final_score_boosted,  # Use boosted score
             'explanations': explanations,
             'explanation_summary': explanation_summary
@@ -557,6 +603,7 @@ async def semantic_search(
             price_score=item['price_score'],
             location_score=item['location_score'],
             recency_score=item['recency_score'],
+            distance_km=item['distance_km'],
             explanations=item['explanations'],
             explanation_summary=item['explanation_summary']
         ))
@@ -688,6 +735,108 @@ async def keyword_search(
     )
 
 
+@router.get("/nearby", response_model=StandardResponse[NearbySearchResponse], tags=["Search"])
+async def nearby_search(
+    lat: Optional[float] = Query(None, ge=-90, le=90),
+    lng: Optional[float] = Query(None, ge=-180, le=180),
+    location: Optional[str] = Query(None, min_length=2, max_length=255, description="Free-text location, geocoded when lat/lng are not provided"),
+    radius_km: float = Query(5.0, gt=0, le=500),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: Optional[User] = Depends(lambda: None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Radius/proximity search: approved properties within radius_km of a point,
+    sorted by distance. The center comes from lat/lng, or from geocoding a
+    free-text location.
+    """
+    query_start = time.time()
+
+    if (lat is None) != (lng is None):
+        raise HTTPException(status_code=400, detail="Both 'lat' and 'lng' must be provided together")
+
+    resolved_from = None
+    if lat is None:
+        if not location:
+            raise HTTPException(status_code=400, detail="Provide either 'lat'/'lng' or a 'location' to search around")
+        resolved = await resolve_location(db, location)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Could not resolve location '{location}'")
+        lat, lng = resolved.lat, resolved.lng
+        resolved_from = location
+
+    logger.info(f"Nearby search initiated - Center: ({lat:.4f}, {lng:.4f}), Radius: {radius_km}km")
+
+    # Indexed bounding-box prefilter, then exact haversine refinement
+    lat_min, lat_max, lng_min, lng_max = bounding_box(lat, lng, radius_km)
+    result = await db.execute(
+        select(Property).where(and_(
+            Property.status == PropertyStatus.APPROVED,
+            Property.latitude.between(lat_min, lat_max),
+            Property.longitude.between(lng_min, lng_max)
+        ))
+    )
+    properties = result.scalars().all()
+
+    within_radius = []
+    for prop in properties:
+        distance = haversine_km(lat, lng, prop.latitude, prop.longitude)
+        if distance <= radius_km:
+            within_radius.append((prop, distance))
+
+    within_radius.sort(key=lambda x: x[1])
+
+    total_results = len(within_radius)
+    offset = (page - 1) * limit
+    paginated = within_radius[offset:offset + limit]
+
+    results = [
+        NearbyProperty(
+            id=prop.id,
+            title=prop.title,
+            price=prop.price,
+            price_type=prop.price_type,
+            location=prop.location,
+            bedrooms=prop.bedrooms,
+            bathrooms=prop.bathrooms,
+            thumbnail=prop.thumbnail,
+            distance_km=round(distance, 2)
+        )
+        for prop, distance in paginated
+    ]
+
+    processing_time_ms = int((time.time() - query_start) * 1000)
+
+    background_tasks.add_task(
+        log_search_async,
+        db,
+        current_user.id if current_user else None,
+        location or f"({lat:.4f}, {lng:.4f})",
+        {"lat": lat, "lng": lng, "radius_km": radius_km},
+        total_results,
+        "nearby",
+        processing_time_ms
+    )
+
+    logger.success(f"Nearby search completed - Results: {total_results}, Time: {processing_time_ms}ms")
+
+    return StandardResponse(
+        message="Nearby properties retrieved successfully",
+        data=NearbySearchResponse(
+            center_lat=lat,
+            center_lng=lng,
+            radius_km=radius_km,
+            resolved_from=resolved_from,
+            total_results=total_results,
+            page=page,
+            limit=limit,
+            results=results
+        )
+    )
+
+
 @router.get("/suggestions", response_model=StandardResponse[SuggestionsResponse], tags=["Search"])
 async def get_search_suggestions(
     q: str = Query(..., min_length=2, max_length=500),
@@ -800,8 +949,19 @@ async def get_similar_properties(
         elif abs(prop.bedrooms - source_property.bedrooms) <= 1:
             similarity_score += 0.1
         
-        # Location proximity (simple string matching)
-        if prop.location.lower() == source_property.location.lower():
+        # Location proximity: exact distance when both have coordinates,
+        # string matching as fallback
+        if (prop.latitude is not None and prop.longitude is not None and
+                source_property.latitude is not None and source_property.longitude is not None):
+            distance = haversine_km(
+                source_property.latitude, source_property.longitude,
+                prop.latitude, prop.longitude
+            )
+            if distance <= 2:
+                similarity_score += 0.3
+            elif distance <= 10:
+                similarity_score += 0.15
+        elif prop.location.lower() == source_property.location.lower():
             similarity_score += 0.3
         elif prop.location.split(',')[0].lower() == source_property.location.split(',')[0].lower():
             similarity_score += 0.15
