@@ -265,7 +265,7 @@ async def generate_embedding_endpoint(
 ):
     """
     Generate a 768-dimensional S-BERT embedding for text.
-    Uses real sentence-transformers/all-mpnet-base-v2 model.
+    Uses real sentence-transformers/all-MiniLM-L6-v2 model.
     Internal endpoint for admin and internal services.
     """
     logger.info(f"Embedding generation requested - Text length: {len(request.text)}")
@@ -291,7 +291,7 @@ async def generate_embedding_endpoint(
             data=EmbedResponse(
                 embedding=embedding,
                 dimensions=768,
-                model="all-mpnet-base-v2",
+                model="all-MiniLM-L6-v2",
                 processing_time_ms=processing_time_ms
             )
         )

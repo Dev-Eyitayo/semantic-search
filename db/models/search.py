@@ -46,7 +46,7 @@ class RankingConfig(Base):
     price_score_weight: Mapped[float] = mapped_column(Float, default=0.20)
     location_score_weight: Mapped[float] = mapped_column(Float, default=0.15)
     recency_score_weight: Mapped[float] = mapped_column(Float, default=0.10)
-    embedding_model: Mapped[str] = mapped_column(String(100), default="all-mpnet-base-v2")
+    embedding_model: Mapped[str] = mapped_column(String(100), default="all-MiniLM-L6-v2")
     reranker_model: Mapped[str] = mapped_column(String(100), default="cross-encoder/ms-marco-MiniLM-L-6-v2")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

@@ -38,7 +38,6 @@ def calculate_semantic_score(query: str, description: str, title: str) -> float:
     Calculate semantic similarity score between query and property.
     Placeholder for S-BERT embedding similarity.
     """
-    # This would use sentence-transformers/all-mpnet-base-v2 in production
     query_lower = query.lower()
     text = f"{title} {description}".lower()
     
@@ -312,7 +311,7 @@ async def log_search_async(
             results_count=results_count,
             search_type=search_type,
             processing_time_ms=processing_time_ms,
-            embedding_model="all-mpnet-base-v2"
+            embedding_model="all-MiniLM-L6-v2"
         )
         db.add(log_entry)
         await db.commit()

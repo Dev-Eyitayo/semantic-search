@@ -172,7 +172,7 @@ async def approve_listing(
             details={
                 "reason": "Listed approved by admin",
                 "notes": request.notes,
-                "embedding_model": "all-mpnet-base-v2",
+                "embedding_model": "all-MiniLM-L6-v2",
                 "embedding_time_ms": processing_time_ms
             }
         )
